@@ -29,8 +29,8 @@ for share in "true" "false"; do
       if [ "$refinement" = "false" ]; then
         REFINEMENT_FLAG="--no-refinement"
         REFINEMENT_NAME_PART="rF"
-        TRAIN_KIND="causal_one_step"
-        VAL_KIND="causal_many_steps"
+        TRAIN_KIND="one_step"
+        VAL_KIND="generate"
       fi
 
       PICARD_FLAG="--picard"
