@@ -53,7 +53,7 @@ parser.add_argument("--train-kind", choices=["acausal", "one_step", "generate"],
 parser.add_argument("--val-kind", choices=["acausal", "one_step", "generate"], default="acausal",
                     help="Pipeline kind to use during validation")
 
-args = parser.parse_args("--epochs 1 --train-kind one_step --val-kind generate".split())
+args = parser.parse_args()
 
 # %%
 # Create directory structure
