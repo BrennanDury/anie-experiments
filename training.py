@@ -91,6 +91,7 @@ def evaluation_epoch(loader, model, kind, loss_fn):
         preds = get_prediction(init_cond, traj, model, kind)
         loss = loss_fn(preds, traj)
         running_loss += loss.item()
+        model.clear_kv_cache()
     return running_loss / len(loader)
 
 class Pipeline(nn.Module):
