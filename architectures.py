@@ -118,4 +118,5 @@ class PositionalUnencoding(nn.Module):
         x : (B, Tp, Hp, Wp, C+P)
         return : (B, Tp, Hp, Wp, C)
         """
-        return x[..., :-self.encoding.shape[-1]]
+        # Positional channels occupy the **first** P dimensions; strip them off.
+        return x[..., self.encoding.shape[-1]:]
