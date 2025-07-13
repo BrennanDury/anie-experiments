@@ -106,7 +106,7 @@ class PositionalEncoding(nn.Module):
         return : (B, Tp, Hp, Wp, C+P)
         """
         B, Tp = x.shape[0], x.shape[1]
-        return torch.cat([x, self.encoding[t:t+Tp].unsqueeze(0).expand(B, -1, -1, -1, -1)], dim=-1)
+        return torch.cat([self.encoding[t:t+Tp].unsqueeze(0).expand(B, -1, -1, -1, -1), x], dim=-1)
 
 class PositionalUnencoding(nn.Module):
     def __init__(self, T, H, W):
