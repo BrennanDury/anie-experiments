@@ -152,7 +152,7 @@ if args.train_kind == "acausal":
     time_width = args.n_timesteps + 1
 else:
     time_width = args.n_timesteps
-n_tokens = args.n_timesteps * Hp * Wp
+n_tokens = time_width * Hp * Wp
 
 pos_enc = PositionalEncoding(time_width, Hp, Wp)
 pos_unenc = PositionalUnencoding(time_width, Hp, Wp)
