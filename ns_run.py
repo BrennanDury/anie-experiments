@@ -149,12 +149,13 @@ decoder = TimestepwiseMLP(in_shape=torch.Size([Hp, Wp, args.d_model-P]),
 
 if args.train_kind == "acausal":
     assert args.val_kind == "acausal"
-    n_tokens = (args.n_timesteps + 1) * Hp * Wp
+    time_width = args.n_timesteps + 1
 else:
-    n_tokens = args.n_timesteps * Hp * Wp
+    time_width = args.n_timesteps
+n_tokens = args.n_timesteps * Hp * Wp
 
-pos_enc = PositionalEncoding(n_tokens, Hp, Wp)
-pos_unenc = PositionalUnencoding(n_tokens, Hp, Wp)
+pos_enc = PositionalEncoding(time_width, Hp, Wp)
+pos_unenc = PositionalUnencoding(time_width, Hp, Wp)
 
 scale = 1 / n_tokens
 make_module = partial(TrimTransformer,

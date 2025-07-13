@@ -47,13 +47,13 @@ for share in "true" "false"; do
       echo "Run results will be in: $RUN_NAME"
       echo "====================================================================="
 
-      (CUDA_VISIBLE_DEVICES=$gpu_id exec -a "$RUN_NAME" python ns_run.py \
+      nohup bash -c "CUDA_VISIBLE_DEVICES=$gpu_id exec -a \"$RUN_NAME\" python ns_run.py \
         --epochs $EPOCHS \
-        --name "$RUN_NAME" \
+        --name \"$RUN_NAME\" \
         $SHARE_FLAG \
         $PICARD_FLAG \
         --train-kind $TRAIN_KIND \
-        --val-kind $VAL_KIND) &
+        --val-kind $VAL_KIND" > "runs/$RUN_NAME.log" 2>&1 &
 
       gpu_id=$((gpu_id + 1))
     done
