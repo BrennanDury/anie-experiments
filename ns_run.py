@@ -54,7 +54,15 @@ parser.add_argument("--train-kind", choices=["acausal", "one_step", "generate"],
 parser.add_argument("--val-kind", choices=["acausal", "one_step", "generate"], default="acausal",
                     help="Pipeline kind to use during validation")
 
+parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility.")
+
 args = parser.parse_args()
+
+# Set random seed
+torch.manual_seed(args.seed)
+np.random.seed(args.seed)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(args.seed)
 
 # %%
 # Create directory structure
@@ -76,6 +84,7 @@ print(f"Created run directory: {run_dir}")
 
 # Save hyperparameters/config
 config_dict = {
+    'seed': args.seed,
     'epochs': args.epochs,
     'batch_size': args.batch_size,
     'lr': args.lr,
