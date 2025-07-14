@@ -1,4 +1,3 @@
-# %%
 import torch
 from torch.nn import functional as F
 import numpy as np
@@ -18,6 +17,8 @@ parser.add_argument("--weight-decay", type=float, default=1e-4, help="Weight dec
 parser.add_argument("--grad-clip-norm", type=float, default=1.0, help="Gradient clipping norm (set to 0 to disable).")
 parser.add_argument("--min-lr", type=float, default=1e-9, help="Minimum learning rate for cosine annealing scheduler.")
 parser.add_argument("--T-max", type=int, default=101, help="Maximum number of iterations for cosine annealing scheduler.")
+parser.add_argument("--start-factor", type=float, default=1e-5, help="Start factor for linear learning rate warmup.")
+parser.add_argument("--warmup-epochs", type=int, default=0, help="Number of epochs for linear learning rate warmup.")
 parser.add_argument("--n-timesteps", type=int, default=11, help="Number of temporal frames to sample from the raw data (consistent with notebook).")
 
 parser.add_argument("--share", action="store_true", help="Share weights between modules.")
@@ -82,6 +83,8 @@ config_dict = {
     'grad_clip_norm': args.grad_clip_norm,
     'min_lr': args.min_lr,
     'T_max': args.T_max,
+    'start_factor': args.start_factor,
+    'warmup_epochs': args.warmup_epochs,
     'n_timesteps': args.n_timesteps,
     'share': args.share,
     'picard': args.picard,
@@ -202,7 +205,12 @@ loss_fn = F.mse_loss
 optim = torch.optim.Adam(
     list(model.parameters()) + list(encoder.parameters()) + list(decoder.parameters()), lr=args.lr, weight_decay=args.weight_decay
 )
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=args.T_max, eta_min=args.min_lr)
+if args.warmup_epochs > 0:
+    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optim, start_factor=args.start_factor, total_iters=args.warmup_epochs)
+    cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=args.T_max, eta_min=args.min_lr)
+    scheduler = torch.optim.lr_scheduler.SequentialLR(optim, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[args.warmup_epochs])
+else:
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=args.T_max, eta_min=args.min_lr)
 
 train_losses = []
 val_losses = []
