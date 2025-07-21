@@ -27,9 +27,8 @@ for share in "true" "false"; do
       TRAIN_KIND="acausal"
       VAL_KIND="acausal"
       if [ "$refinement" = "false" ]; then
-        REFINEMENT_FLAG="--no-refinement"
         REFINEMENT_NAME_PART="rF"
-        TRAIN_KIND="one_step"
+        TRAIN_KIND="one-step"
         VAL_KIND="generate"
       fi
 
@@ -40,7 +39,8 @@ for share in "true" "false"; do
         PICARD_NAME_PART="pF"
       fi
 
-      RUN_NAME="${SHARE_NAME_PART}_${REFINEMENT_NAME_PART}_${PICARD_NAME_PART}"
+      RUN_NAME="7_20_${SHARE_NAME_PART}_${REFINEMENT_NAME_PART}_${PICARD_NAME_PART}"
+      SEED=$42
 
       echo "====================================================================="
       echo "Running with: share=$share, refinement=$refinement, picard=$picard on GPU $gpu_id"
@@ -53,7 +53,8 @@ for share in "true" "false"; do
         $SHARE_FLAG \
         $PICARD_FLAG \
         --train-kind $TRAIN_KIND \
-        --val-kind $VAL_KIND" > "runs/$RUN_NAME.log" 2>&1 &
+        --val-kind $VAL_KIND \
+        --seed $SEED" > "runs/$RUN_NAME.log" 2>&1 &
 
       gpu_id=$((gpu_id + 1))
     done

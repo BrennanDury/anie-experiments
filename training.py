@@ -62,25 +62,27 @@ def get_prediction(initial_conditions: Tensor, trajectory: Tensor, model: nn.Mod
         return acausal_prediction(initial_conditions, model, trajectory.shape[1])
     elif kind == "generate":
         return generate_prediction(initial_conditions, model, trajectory.shape[1])
-    elif kind == "one_step":
+    elif kind == "one-step":
         full_trajectory = torch.cat([initial_conditions, trajectory], dim=1)
         return one_step_prediction(full_trajectory[:, :-1], model)
     else:
         raise ValueError(f"Invalid kind: {kind}")
 
-def training_epoch(loader, model, kind, loss_fn, optim, clip_grad_norm=1.0):
+def training_epoch(loader, model, kind, loss_fn, optim, scheduler=None, grad_clip_norm=1.0):
     running_loss = 0.0
     for initial_conditions, trajectory in loader:
         optim.zero_grad()
         preds = get_prediction(initial_conditions, trajectory, model, kind)
         loss = loss_fn(preds, trajectory)
         loss.backward()
-        if clip_grad_norm > 0:
+        if grad_clip_norm > 0.0:
             nn.utils.clip_grad_norm_(
                 [p for p in optim.param_groups[0]['params'] if p.grad is not None],
-                clip_grad_norm
+                grad_clip_norm
             )
         optim.step()
+        if scheduler is not None:
+            scheduler.step()
         running_loss += loss.item()
         model.clear_kv_cache()
     return running_loss / len(loader)
@@ -112,7 +114,7 @@ class Pipeline(nn.Module):
         x = self.encoder(x)
         x = self.positional_encoding(x, t)
         x = self.model(x.flatten(1, 3)).reshape_as(x)
-        x = self.positional_unencoding(x)
+        x = self.positional_unencoding(x, t)
         x = self.decoder(x)
         return x
 
