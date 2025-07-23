@@ -70,7 +70,9 @@ def get_prediction(initial_conditions: Tensor, trajectory: Tensor, model: nn.Mod
 
 def training_epoch(loader, model, kind, loss_fn, optim, scheduler=None, grad_clip_norm=1.0, device=None):
     running_loss = 0.0
-    for initial_conditions, trajectory in loader:
+    n_batches = 0
+    for batch in loader:
+        initial_conditions, trajectory = batch["a"], batch["u"]
         if device is not None:
             initial_conditions = initial_conditions.to(device)
             trajectory = trajectory.to(device)
@@ -88,11 +90,14 @@ def training_epoch(loader, model, kind, loss_fn, optim, scheduler=None, grad_cli
             scheduler.step()
         running_loss += loss.item()
         model.clear_kv_cache()
-    return running_loss / len(loader)
+        n_batches += 1
+    return running_loss / n_batches
 
 def evaluation_epoch(loader, model, kind, loss_fn, device=None):
     running_loss = 0.0
-    for initial_conditions, trajectory in loader:
+    n_batches = 0
+    for batch in loader:
+        initial_conditions, trajectory = batch["a"], batch["u"]
         if device is not None:
             initial_conditions = initial_conditions.to(device)
             trajectory = trajectory.to(device)
@@ -100,7 +105,8 @@ def evaluation_epoch(loader, model, kind, loss_fn, device=None):
         loss = loss_fn(preds, trajectory)
         running_loss += loss.item()
         model.clear_kv_cache()
-    return running_loss / len(loader)
+        n_batches += 1
+    return running_loss / n_batches
 
 class Pipeline(nn.Module):
     def __init__(self, model, encoder, decoder, positional_encoding, positional_unencoding):
