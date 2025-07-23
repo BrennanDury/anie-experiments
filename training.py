@@ -68,9 +68,12 @@ def get_prediction(initial_conditions: Tensor, trajectory: Tensor, model: nn.Mod
     else:
         raise ValueError(f"Invalid kind: {kind}")
 
-def training_epoch(loader, model, kind, loss_fn, optim, scheduler=None, grad_clip_norm=1.0):
+def training_epoch(loader, model, kind, loss_fn, optim, scheduler=None, grad_clip_norm=1.0, device=None):
     running_loss = 0.0
     for initial_conditions, trajectory in loader:
+        if device is not None:
+            initial_conditions = initial_conditions.to(device)
+            trajectory = trajectory.to(device)
         optim.zero_grad()
         preds = get_prediction(initial_conditions, trajectory, model, kind)
         loss = loss_fn(preds, trajectory)
@@ -87,11 +90,14 @@ def training_epoch(loader, model, kind, loss_fn, optim, scheduler=None, grad_cli
         model.clear_kv_cache()
     return running_loss / len(loader)
 
-def evaluation_epoch(loader, model, kind, loss_fn):
+def evaluation_epoch(loader, model, kind, loss_fn, device=None):
     running_loss = 0.0
-    for init_cond, traj in loader:
-        preds = get_prediction(init_cond, traj, model, kind)
-        loss = loss_fn(preds, traj)
+    for initial_conditions, trajectory in loader:
+        if device is not None:
+            initial_conditions = initial_conditions.to(device)
+            trajectory = trajectory.to(device)
+        preds = get_prediction(initial_conditions, trajectory, model, kind)
+        loss = loss_fn(preds, trajectory)
         running_loss += loss.item()
         model.clear_kv_cache()
     return running_loss / len(loader)

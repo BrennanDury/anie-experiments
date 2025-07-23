@@ -131,9 +131,6 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
 init_conds, trajs = load_navier_stokes_tensor(args.data, n_timesteps=args.n_timesteps)
-#init_conds, trajs = torch.randn(5000, 1, 64, 64, 1), torch.randn(5000, 10, 64, 64, 1)
-init_conds = init_conds.to(device)
-trajs = trajs.to(device)
 
 train_loader, val_loader = setup_dataloaders(init_conds, trajs, batch_size=args.batch_size)
 if args.positional_encoding == "coordinate":
@@ -144,7 +141,7 @@ N, T, H, W, Q = trajs.shape
 
 # %%
 def make_block_mask_after(n_tokens, block_size):
-    idx = torch.arange(n_tokens, dtype=torch.long)
+    idx = torch.arange(n_tokens, dtype=torch.int32)
     mask_after = block_size * ((idx // block_size) + 1) - 1
     return mask_after
 
@@ -260,11 +257,10 @@ val_pipeline = pipelines[args.val_kind]
 
 # %%
 loss_fn = F.mse_loss
+l1 = list(pos_enc.parameters()) if args.positional_encoding == "learned" else []
+l2 = list(model.parameters()) + list(encoder.parameters()) + list(decoder.parameters())
 optim = torch.optim.Adam(
-    pos_enc.parameters() if args.positional_encoding == "learned" else [] +
-    list(model.parameters()) +
-    list(encoder.parameters()) +
-    list(decoder.parameters()), lr=args.lr, weight_decay=args.weight_decay
+    l1 + l2, lr=args.lr, weight_decay=args.weight_decay
 )
 if args.warmup_epochs > 0:
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optim, start_factor=args.start_factor, total_iters=len(train_loader) * args.warmup_epochs)
@@ -283,12 +279,12 @@ for epoch in range(1, args.epochs + 1):
 
     train_pipeline.train()
     if epoch <= args.warmup_epochs:
-        train_loss = training_epoch(train_loader, train_pipeline, args.train_kind, loss_fn, optim, scheduler=scheduler, grad_clip_norm=args.grad_clip_norm)
+        train_loss = training_epoch(train_loader, train_pipeline, args.train_kind, loss_fn, optim, scheduler=scheduler, grad_clip_norm=args.grad_clip_norm, device=device)
     else:
-        train_loss = training_epoch(train_loader, train_pipeline, args.train_kind, loss_fn, optim, grad_clip_norm=args.grad_clip_norm)
+        train_loss = training_epoch(train_loader, train_pipeline, args.train_kind, loss_fn, optim, grad_clip_norm=args.grad_clip_norm, device=device)
     val_pipeline.eval()
     with torch.no_grad():
-        val_loss   = evaluation_epoch(val_loader, val_pipeline, args.val_kind, loss_fn)
+        val_loss   = evaluation_epoch(val_loader, val_pipeline, args.val_kind, loss_fn, device=device)
     if epoch > args.warmup_epochs:
         scheduler.step()
 
