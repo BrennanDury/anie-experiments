@@ -3,9 +3,8 @@ import numpy as np
 import torch
 import math
 import ray
-from ray import train, tune
-from ray.train.torch import TorchTrainer
-from ray.train import ScalingConfig, Checkpoint
+from ray import tune
+from ray.tune import Checkpoint
 from data import load_navier_stokes_tensor
 from architectures import TrimTransformer, PatchwiseMLP, PatchwiseMLP_norm, TimestepwiseMLP, \
     PositionalEncoding, PositionalUnencoding, RoPENd, RoPENdUnencoding, \
@@ -19,18 +18,12 @@ from pathlib import Path
 import time
 import tempfile, os
 from itertools import product
-
-
-############################################################
-# Utility helpers                                          #
-############################################################
+import argparse
+import pandas as pd
 
 def derive_dependent_hparams(cfg: dict) -> dict:
-    """Augment the config with parameters that are deterministic functions
-    of the user-controlled hyper-parameters."""
     d_model = cfg["d_model"]
 
-    # Positional encoding & encoder output dims -------------------------------------------------
     if cfg["positional_encoding"] == "coordinate":
         cfg["encoder_output_dim"] = d_model - 3
         cfg["encoder_channels"] = [d_model - 3, d_model - 3]
@@ -38,35 +31,21 @@ def derive_dependent_hparams(cfg: dict) -> dict:
         cfg["encoder_output_dim"] = d_model
         cfg["encoder_channels"] = [d_model, d_model]
 
-    # Feed-forward dim --------------------------------------------------------------------------
     cfg["dim_feedforward"] = d_model * 2
 
-    # Encoder/decoder channels ------------------------------------------------------------------
     if cfg["decoder_kind"] == "timestepwise":
         cfg["decoder_channels"] = [64, 256]
     else:
         cfg["decoder_channels"] = cfg["encoder_channels"]
 
-    # Validation pipeline kind ------------------------------------------------------------------
     cfg["val_kind"] = "acausal" if cfg["train_kind"] == "acausal" else "generate"
     return cfg
 
 
-############################################################
-# Main training function (executed inside Ray worker)      #
-############################################################
-
-def train_ns_ray(config):
-    """Ray Train entry-point function. Builds the model according to *config*,
-    trains for *config["epochs"]* epochs and reports the final validation loss."""
-
-    # Make sure we start from a clean GPU
+def train_fn(config, ds):
     torch.cuda.empty_cache()
 
-    # ---------------------------------------------------------------------
-    # 1. Prepare deterministic, complete config
-    # ---------------------------------------------------------------------
-    cfg = derive_dependent_hparams(dict(config))  # work on a local copy
+    cfg = derive_dependent_hparams(dict(config))
 
     # Torch / numpy seeds
     torch.manual_seed(cfg["seed"])
@@ -74,29 +53,22 @@ def train_ns_ray(config):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(cfg["seed"])
 
-    # ---------------------------------------------------------------------
-    # 2. Data (prefer Ray Dataset shard if available)
-    # ---------------------------------------------------------------------
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-    train_shard = train.get_dataset_shard("train")
-    val_shard = train.get_dataset_shard("val")
+    train_shard = ds["train"]
+    val_shard = ds["val"]
 
-    train_loader = train_shard.iter_torch_batches(batch_size=cfg["batch_size"])
-    val_loader = val_shard.iter_torch_batches(batch_size=cfg["batch_size"])
+    train_loader = train_shard.iter_torch_batches(batch_size=cfg["batch_size"], drop_last=True)
+    val_loader = val_shard.iter_torch_batches(batch_size=cfg["batch_size"], drop_last=True)
 
-    N, T, H, W, Q = 5000, 10, 64, 64, 1
+    N, H, W, Q = 128, 64, 64, 1
 
-    # ---------------------------------------------------------------------
-    # 3. Model components --------------------------------------------------
-    # ---------------------------------------------------------------------
     if cfg["norm_mlp"]:
         MLPClass = PatchwiseMLP_norm
     else:
         MLPClass = PatchwiseMLP
 
-    # encoder
     encoder = MLPClass(input_dim=Q,
                        output_dim=cfg["encoder_output_dim"],
                        hidden_dims=cfg["encoder_channels"],
@@ -107,7 +79,6 @@ def train_ns_ray(config):
     Wp = W // cfg["patch_shape"][1]
     patch_size = cfg["patch_shape"][0] * cfg["patch_shape"][1]
 
-    # decoder
     if cfg["decoder_kind"] == "timestepwise":
         decoder = TimestepwiseMLP(in_shape=torch.Size([Hp, Wp, cfg["encoder_output_dim"]]),
                                   hidden_dims=cfg["decoder_channels"],
@@ -120,7 +91,6 @@ def train_ns_ray(config):
                                           S=[1, 1]),
                                  Q=Q, patch_shape=cfg["patch_shape"]).to(device)
 
-    # positional encodings -------------------------------------------------
     time_width = cfg["n_timesteps"] + 1 if cfg["train_kind"] == "acausal" else cfg["n_timesteps"]
     if cfg["positional_encoding"] == "coordinate":
         pos_enc = PositionalEncoding(time_width, Hp, Wp)
@@ -161,8 +131,6 @@ def train_ns_ray(config):
     else:
         model = ArbitraryIterations(modules)
 
-    # ---------------------------------------------------------------------
-    # 4. Pipeline wrappers -------------------------------------------------
     mask = None
     if cfg["train_kind"] == "one-step":  # only needed for one-step
         n_patches = Hp * Wp
@@ -183,13 +151,10 @@ def train_ns_ray(config):
     train_pipeline = pipelines[cfg["train_kind"]]
     val_pipeline = pipelines[cfg["val_kind"]]
 
-    # ---------------------------------------------------------------------
-    # 5. Optimizer & LR scheduler -----------------------------------------
     l1 = list(pos_enc.parameters()) if cfg["positional_encoding"] == "learned" else []
     l2 = list(model.parameters()) + list(encoder.parameters()) + list(decoder.parameters())
     optim = torch.optim.Adam(l1 + l2, lr=cfg["lr"], weight_decay=cfg["weight_decay"])
 
-    # warm-up + cosine schedule
     if cfg["warmup_epochs"] > 0:
         batches_per_epoch = math.ceil(N / cfg["batch_size"])
         warm_steps = batches_per_epoch * cfg["warmup_epochs"]
@@ -199,8 +164,7 @@ def train_ns_ray(config):
     else:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=cfg["T_max"], eta_min=cfg["min_lr"])
 
-    # ---------------------------------------------------------------------
-    # 6. Training loop -----------------------------------------------------
+
     train_losses = []
     val_losses = []
     epoch_times = []
@@ -245,49 +209,40 @@ def train_ns_ray(config):
                 )
 
                 ckpt = Checkpoint.from_directory(tempdir)
-                train.report(metrics, checkpoint=ckpt)
+                tune.report(metrics, checkpoint=ckpt)
         else:
-            train.report(metrics)
+            tune.report(metrics)
 
     if torch.distributed.is_initialized():
         torch.distributed.destroy_process_group()
 
 
-############################################################
-# Search space & Ray Tune / Train orchestration            #
-############################################################
-
-
-
 def main():
-    """Two-level hyper-parameter search.
+    parser = argparse.ArgumentParser(description="Navier–Stokes Ray Tune search")
+    parser.add_argument("--results-dir", type=str, default="tune_results",
+                        help="Directory where tuning result CSV files will be written.")
+    args, _ = parser.parse_known_args()
 
-    Outer loop  – enumerates the SEARCH parameters.
-    Inner loop  – for each outer combination, grid-searches the TUNED parameters
-                  for 200 epochs and picks the best combination.
-    Long run    – repeats training for 10 000 epochs with the merged (outer +
-                  best-tuned) configuration.
-    """
+    results_dir = Path(args.results_dir).resolve()
+    results_dir.mkdir(parents=True, exist_ok=True)
 
-    # ---------------------------------------------------------------------
-    # 0. Shared Ray Dataset (loaded only once and placed in the object store)
-    # ---------------------------------------------------------------------
+    ray.init(object_store_memory=80_000_000_000)
+
     n_timesteps = 10
     init_conds, trajs = load_navier_stokes_tensor(Path("ns_data.mat"), n_timesteps=n_timesteps)
+    #init_conds, trajs = torch.randn((160, 1, 64, 64, 1)), torch.randn((160, 10, 64, 64, 1))
 
     items = [{"a": init_conds.numpy()[i], "u": trajs.numpy()[i]} for i in range(init_conds.shape[0])]
     ray_ds = ray.data.from_items(items)
     train, val = ray_ds.train_test_split(test_size=0.2)
     datasets = {"train": train, "val": val}
-    # ---------------------------------------------------------------------
-    # 1. Hyper-parameter grids
-    # ---------------------------------------------------------------------
+
     SEARCH_GRID = {
         "seed":        [0, 1],
         "share":       [True, False],
         "picard":      [True, False],
         "d_model":     [60, 120, 240],
-        "train_kind":  ["acausal", "one-step", "generate"],
+        "train_kind":  ["acausal"],
     }
 
     TUNED_GRID = {
@@ -318,64 +273,37 @@ def main():
 
     outer_keys = list(SEARCH_GRID.keys())
 
-    # ---------------------------------------------------------------------
-    # 2. Outer loop – iterate over SEARCH parameter combinations
-    # ---------------------------------------------------------------------
     for outer_values in product(*(SEARCH_GRID[k] for k in outer_keys)):
         outer_cfg = dict(zip(outer_keys, outer_values))
 
-        # -------------------- inner grid search (200 epochs) -------------
-        tuned_space = {
-            "train_loop_config": {
-                # grid over the tuned parameters
+        param_space = {
                 **{k: tune.grid_search(v) for k, v in TUNED_GRID.items()},
-                # fixed SEARCH parameters for this outer iteration
                 **outer_cfg,
-                # constants
                 **CONSTANT_PARAMS,
-                "epochs": 5,
+                "epochs": 1,
                 "name": "inner_tune",
-            }
         }
 
-        trainer = TorchTrainer(
-            train_loop_per_worker=train_ns_ray,
-            scaling_config=ScalingConfig(num_workers=1, use_gpu=True),
-            train_loop_config={},
-            datasets=datasets,
-        )
-
+        train_driver = tune.with_resources(train_fn, resources={"gpu": 1/16, "cpu": 26/16 })
+        train_driver = tune.with_parameters(train_driver, ds=datasets)
+        tune_config = tune.TuneConfig(metric="val_loss", mode="min")
+        run_config = tune.RunConfig(storage_path=results_dir)
         tuner = tune.Tuner(
-            trainer,
-            param_space=tuned_space,
-            tune_config=tune.TuneConfig(metric="val_loss", mode="min"),
+            train_driver,
+            param_space=param_space,
+            tune_config=tune_config,
+            run_config=run_config,
         )
-
         inner_results = tuner.fit()
-        best_inner_cfg_full = inner_results.get_best_result().config["train_loop_config"]
 
-        best_tuned_subset = {k: best_inner_cfg_full[k] for k in TUNED_GRID.keys()}
-
-        # -------------------- long run (10 000 epochs) --------------------
-        long_cfg = {
-            **outer_cfg,
-            **best_tuned_subset,
-            **CONSTANT_PARAMS,
-            "epochs": 1,
-            "name": "long_run",
-        }
-
-        long_trainer = TorchTrainer(
-            train_loop_per_worker=train_ns_ray,
-            scaling_config=ScalingConfig(num_workers=1, use_gpu=True),
-            train_loop_config=long_cfg,
-            datasets=datasets,
-        )
-
-        long_result = long_trainer.fit()
-        final_val_loss = long_result.metrics.get("val_loss", None)
-        print(f"Finished SEARCH combination {outer_cfg} → final val_loss={final_val_loss}")
-
+        try:
+            df = inner_results.get_dataframe()
+            outer_tag = "__".join(f"{k}-{v}" for k, v in outer_cfg.items())
+            csv_path = results_dir / f"tune_{outer_tag}.csv"
+            df.to_csv(csv_path, index=False)
+            print(f"[INFO] Saved tuning results to {csv_path}")
+        except Exception as e:
+            print(f"[WARN] Could not save tuning results: {e}")
 
 if __name__ == "__main__":
     main()
