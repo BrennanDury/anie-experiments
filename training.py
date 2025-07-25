@@ -73,7 +73,7 @@ def training_epoch(loader, model, kind, loss_fn, optim, scheduler=None, grad_cli
     n_batches = 0
     for batch in loader:
         initial_conditions, trajectory = batch["a"], batch["u"]
-        if device is not None:
+        if device:
             initial_conditions = initial_conditions.to(device)
             trajectory = trajectory.to(device)
         optim.zero_grad()
@@ -86,7 +86,7 @@ def training_epoch(loader, model, kind, loss_fn, optim, scheduler=None, grad_cli
                 grad_clip_norm
             )
         optim.step()
-        if scheduler is not None:
+        if scheduler:
             scheduler.step()
         running_loss += loss.item()
         model.clear_kv_cache()
@@ -98,7 +98,7 @@ def evaluation_epoch(loader, model, kind, loss_fn, device=None):
     n_batches = 0
     for batch in loader:
         initial_conditions, trajectory = batch["a"], batch["u"]
-        if device is not None:
+        if device:
             initial_conditions = initial_conditions.to(device)
             trajectory = trajectory.to(device)
         preds = get_prediction(initial_conditions, trajectory, model, kind)

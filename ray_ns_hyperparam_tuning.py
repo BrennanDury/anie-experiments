@@ -5,7 +5,7 @@ import math
 import ray
 from ray import tune
 from ray.tune import Checkpoint
-from data import load_navier_stokes_tensor
+from data import load_navier_stokes_tensor, NavierStokesDataset
 from architectures import TrimTransformer, PatchwiseMLP, PatchwiseMLP_norm, TimestepwiseMLP, \
     PositionalEncoding, PositionalUnencoding, RoPENd, RoPENdUnencoding, \
     LearnedPositionalEncoding, LearnedPositionalUnencoding, DecoderWrapper
@@ -47,7 +47,6 @@ def train_fn(config, ds):
 
     cfg = derive_dependent_hparams(dict(config))
 
-    # Torch / numpy seeds
     torch.manual_seed(cfg["seed"])
     np.random.seed(cfg["seed"])
     if torch.cuda.is_available():
@@ -58,7 +57,6 @@ def train_fn(config, ds):
 
     train_shard = ds["train"]
     val_shard = ds["val"]
-
     train_loader = train_shard.iter_torch_batches(batch_size=cfg["batch_size"], drop_last=True)
     val_loader = val_shard.iter_torch_batches(batch_size=cfg["batch_size"], drop_last=True)
 
@@ -73,7 +71,7 @@ def train_fn(config, ds):
                        output_dim=cfg["encoder_output_dim"],
                        hidden_dims=cfg["encoder_channels"],
                        K=cfg["patch_shape"],
-                       S=cfg["patch_shape"]).to(device)
+                       S=cfg["patch_shape"])
 
     Hp = H // cfg["patch_shape"][0]
     Wp = W // cfg["patch_shape"][1]
@@ -89,7 +87,7 @@ def train_fn(config, ds):
                                           hidden_dims=list(reversed(cfg["encoder_channels"])),
                                           K=[1, 1],
                                           S=[1, 1]),
-                                 Q=Q, patch_shape=cfg["patch_shape"]).to(device)
+                                 Q=Q, patch_shape=cfg["patch_shape"])
 
     time_width = cfg["n_timesteps"] + 1 if cfg["train_kind"] == "acausal" else cfg["n_timesteps"]
     if cfg["positional_encoding"] == "coordinate":
@@ -98,7 +96,7 @@ def train_fn(config, ds):
     elif cfg["positional_encoding"] == "rope":
         pos_enc = RoPENd(torch.Size([time_width, Hp, Wp, cfg["encoder_output_dim"]]))
         pos_unenc = RoPENdUnencoding(torch.Size([time_width, Hp, Wp, cfg["encoder_output_dim"]]))
-    else:  # learned
+    else:
         pos_enc = LearnedPositionalEncoding(torch.Size([time_width, Hp, Wp, cfg["encoder_output_dim"]]))
         pos_unenc = LearnedPositionalUnencoding(pos_enc)
 
@@ -156,7 +154,7 @@ def train_fn(config, ds):
     optim = torch.optim.Adam(l1 + l2, lr=cfg["lr"], weight_decay=cfg["weight_decay"])
 
     if cfg["warmup_epochs"] > 0:
-        batches_per_epoch = math.ceil(N / cfg["batch_size"])
+        batches_per_epoch = N // cfg["batch_size"]
         warm_steps = batches_per_epoch * cfg["warmup_epochs"]
         warmup_scheduler = torch.optim.lr_scheduler.LinearLR(optim, start_factor=cfg["start_factor"], total_iters=warm_steps)
         cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=cfg["T_max"], eta_min=cfg["min_lr"])
@@ -176,13 +174,13 @@ def train_fn(config, ds):
         train_pipeline.train()
         if epoch <= cfg["warmup_epochs"]:
             train_loss = training_epoch(train_loader, train_pipeline, cfg["train_kind"], loss_fn, optim,
-                                         scheduler=scheduler, grad_clip_norm=cfg["grad_clip_norm"])
+                                         scheduler=scheduler, grad_clip_norm=cfg["grad_clip_norm"], device=device)
         else:
             train_loss = training_epoch(train_loader, train_pipeline, cfg["train_kind"], loss_fn, optim,
-                                         grad_clip_norm=cfg["grad_clip_norm"])
+                                         grad_clip_norm=cfg["grad_clip_norm"], device=device)
         val_pipeline.eval()
         with torch.no_grad():
-            val_loss = evaluation_epoch(val_loader, val_pipeline, cfg["val_kind"], loss_fn)
+            val_loss = evaluation_epoch(val_loader, val_pipeline, cfg["val_kind"], loss_fn, device=device)
         if epoch > cfg["warmup_epochs"]:
             scheduler.step()
 
@@ -230,7 +228,6 @@ def main():
 
     n_timesteps = 10
     init_conds, trajs = load_navier_stokes_tensor(Path("ns_data.mat"), n_timesteps=n_timesteps)
-    #init_conds, trajs = torch.randn((160, 1, 64, 64, 1)), torch.randn((160, 10, 64, 64, 1))
 
     items = [{"a": init_conds.numpy()[i], "u": trajs.numpy()[i]} for i in range(init_conds.shape[0])]
     ray_ds = ray.data.from_items(items)
@@ -242,7 +239,7 @@ def main():
         "share":       [True, False],
         "picard":      [True, False],
         "d_model":     [60, 120, 240],
-        "train_kind":  ["acausal"],
+        "train_kind":  ["acausal", "one-step", "generate"],
     }
 
     TUNED_GRID = {
@@ -280,11 +277,11 @@ def main():
                 **{k: tune.grid_search(v) for k, v in TUNED_GRID.items()},
                 **outer_cfg,
                 **CONSTANT_PARAMS,
-                "epochs": 1,
+                "epochs": 200,
                 "name": "inner_tune",
         }
 
-        train_driver = tune.with_resources(train_fn, resources={"gpu": 1/16, "cpu": 26/16 })
+        train_driver = tune.with_resources(train_fn, resources={"gpu": 1, "cpu": 11 })
         train_driver = tune.with_parameters(train_driver, ds=datasets)
         tune_config = tune.TuneConfig(metric="val_loss", mode="min")
         run_config = tune.RunConfig(storage_path=results_dir)
