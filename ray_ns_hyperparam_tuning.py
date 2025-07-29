@@ -280,7 +280,7 @@ def main():
                 **{k: tune.grid_search(v) for k, v in TUNED_GRID.items()},
                 **outer_cfg,
                 **CONSTANT_PARAMS,
-                "epochs": 1,
+                "epochs": 313,
                 "name": "inner_tune",
         }
 
