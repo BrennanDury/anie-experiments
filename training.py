@@ -21,14 +21,24 @@ def broadcast_initial_conditions(x: Tensor, length: int) -> Tensor:
     """
     return x.repeat(1, length, 1, 1, 1)
 
-def acausal_prediction(x: Tensor, model: nn.Module, T: int) -> Tensor:
+def acausal_prediction_wide(x: Tensor, model: nn.Module, T: int) -> Tensor:
     """
     x : (B, 1, H, W, Q)
     model : (B, T+1, H, W, Q) -> (B, T+1, H, W, Q)
     return : (B, T, H, W, Q)
     """
-    y = broadcast_initial_conditions(x, T+1)
-    return model(y)[:, 1:]
+    y = broadcast_initial_conditions(x, T + 1)
+    z = model(y)
+    return z[:, :1], z[:, 1:]
+
+def acausal_prediction_narrow(x: Tensor, model: nn.Module, T: int) -> Tensor:
+    """
+    x : (B, 1, H, W, Q)
+    model : (B, T, H, W, Q) -> (B, T, H, W, Q)
+    return : (B, T, H, W, Q)
+    """
+    y = broadcast_initial_conditions(x, T)
+    return x, model(y)
 
 def generate_prediction(x: Tensor, model: nn.Module, T: int) -> Tensor:
     """
@@ -40,7 +50,8 @@ def generate_prediction(x: Tensor, model: nn.Module, T: int) -> Tensor:
     sequence = [x]
     for t in range(T):
         sequence.append(model(sequence[-1], t))
-    return torch.cat(sequence, dim=1)[:, 1:]
+    s = torch.cat(sequence, dim=1)
+    return x, s[:, 1:]
 
 def one_step_prediction(x: Tensor, model: nn.Module) -> Tensor:
     """
@@ -48,7 +59,8 @@ def one_step_prediction(x: Tensor, model: nn.Module) -> Tensor:
     model : (B, T, H, W, Q) -> (B, T, H, W, Q)
     return : (B, T, H, W, Q)
     """
-    return model(x)
+    y = model(x)
+    return x[:, :1], y
 
 def get_prediction(initial_conditions: Tensor, trajectory: Tensor, model: nn.Module, kind: str) -> Tensor:
     """
@@ -58,8 +70,10 @@ def get_prediction(initial_conditions: Tensor, trajectory: Tensor, model: nn.Mod
     kind : str
     return : (B, T, H, W, Q)
     """
-    if kind == "acausal":
-        return acausal_prediction(initial_conditions, model, trajectory.shape[1])
+    if kind == "acausal_wide":
+        return acausal_prediction_wide(initial_conditions, model, trajectory.shape[1])
+    elif kind == "acausal_narrow":
+        return acausal_prediction_narrow(initial_conditions, model, trajectory.shape[1])
     elif kind == "generate":
         return generate_prediction(initial_conditions, model, trajectory.shape[1])
     elif kind == "one-step":
@@ -68,7 +82,7 @@ def get_prediction(initial_conditions: Tensor, trajectory: Tensor, model: nn.Mod
     else:
         raise ValueError(f"Invalid kind: {kind}")
 
-def training_epoch(loader, model, kind, loss_fn, optim, scheduler=None, grad_clip_norm=1.0, device=None):
+def training_epoch(loader, model, kind, loss_fn, optim, scheduler=None, grad_clip_norm=1.0, device=None, compute_initial_conditions_loss=False):
     running_loss = 0.0
     n_batches = 0
     for batch in loader:
@@ -77,8 +91,16 @@ def training_epoch(loader, model, kind, loss_fn, optim, scheduler=None, grad_cli
             initial_conditions = initial_conditions.to(device)
             trajectory = trajectory.to(device)
         optim.zero_grad()
-        preds = get_prediction(initial_conditions, trajectory, model, kind)
-        loss = loss_fn(preds, trajectory)
+        initial_conditions_pred, trajectory_preds = get_prediction(initial_conditions, trajectory, model, kind)
+        if compute_initial_conditions_loss:
+            preds = torch.cat(initial_conditions_pred, trajectory_preds, dim=1)
+            targets = torch.cat(initial_conditions, trajectory, dim=1)
+        else:
+            preds = trajectory_preds
+            targets = trajectory
+        loss = loss_fn(preds, targets)
+        loss_initial_conditions = loss_fn(initial_conditions_pred, initial_conditions)
+        loss = loss + loss_initial_conditions
         loss.backward()
         if grad_clip_norm > 0.0:
             nn.utils.clip_grad_norm_(

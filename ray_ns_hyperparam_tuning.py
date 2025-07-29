@@ -36,7 +36,12 @@ def derive_dependent_hparams(cfg: dict) -> dict:
     else:
         cfg["decoder_channels"] = cfg["encoder_channels"]
 
-    cfg["val_kind"] = "acausal" if cfg["train_kind"] == "acausal" else "generate"
+    if cfg["train_kind"] == "acausal":
+        cfg["train_kind"] = "acausal_narrow"
+        cfg["val_kind"] = "acausal_narrow"
+    else:
+        cfg["val_kind"] = "generate"
+
     return cfg
 
 
@@ -174,13 +179,13 @@ def train_fn(config, ds):
         train_pipeline.train()
         if epoch <= cfg["warmup_epochs"]:
             train_loss = training_epoch(train_loader, train_pipeline, cfg["train_kind"], loss_fn, optim,
-                                         scheduler=scheduler, grad_clip_norm=cfg["grad_clip_norm"], device=device)
+                                         scheduler=scheduler, grad_clip_norm=cfg["grad_clip_norm"], device=device, compute_initial_conditions_loss=cfg["compute_initial_conditions_train_loss"])
         else:
             train_loss = training_epoch(train_loader, train_pipeline, cfg["train_kind"], loss_fn, optim,
-                                         grad_clip_norm=cfg["grad_clip_norm"], device=device)
+                                         grad_clip_norm=cfg["grad_clip_norm"], device=device, compute_initial_conditions_loss=cfg["compute_initial_conditions_train_loss"])
         val_pipeline.eval()
         with torch.no_grad():
-            val_loss = evaluation_epoch(val_loader, val_pipeline, cfg["val_kind"], loss_fn, device=device)
+            val_loss = evaluation_epoch(val_loader, val_pipeline, cfg["val_kind"], loss_fn, device=device, compute_initial_conditions_loss=cfg["compute_initial_conditions_val_loss"])
         if epoch > cfg["warmup_epochs"]:
             scheduler.step()
 
@@ -227,7 +232,7 @@ def main():
 
     ray.init(object_store_memory=200_000_000_000)
 
-    n_timesteps = 10
+    n_timesteps = 9
     init_conds, trajs = load_navier_stokes_tensor(Path("ns_data.mat"), n_timesteps=n_timesteps)
 
     items = [{"a": init_conds.numpy()[i], "u": trajs.numpy()[i]} for i in range(init_conds.shape[0])]
@@ -267,6 +272,8 @@ def main():
         "r": 0.5,
         "patch_shape": [4, 4],
         "mlp_kind": "act",
+        "compute_initial_conditions_train_loss": False,
+        "compute_initial_conditions_val_loss": False
     }
 
     outer_keys = list(SEARCH_GRID.keys())
