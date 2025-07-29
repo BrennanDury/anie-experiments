@@ -216,6 +216,8 @@ def main():
     parser = argparse.ArgumentParser(description="Navier–Stokes Ray Tune search")
     parser.add_argument("--results-dir", type=str, default="tune_results",
                         help="Directory where tuning result CSV files will be written.")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
+    parser.add_argument("--train-kind", type=str, default="one-step", help="Train kind")
     args, _ = parser.parse_known_args()
 
     results_dir = Path(args.results_dir).resolve()
@@ -236,11 +238,9 @@ def main():
         "share":       [False],
         "picard":      [False],
         "d_model":     [60],
-        "train_kind":  ["one-step", "acausal", "generate"],
     }
 
     TUNED_GRID = {
-        "lr":                 [1e-3, 1e-4, 1e-5],
         "decoder_kind":       ["timestepwise", "patchwise"],
         "norm_mlp":           [True, False],
         "positional_encoding": ["coordinate", "rope", "learned"],
@@ -274,6 +274,8 @@ def main():
                 **{k: tune.grid_search(v) for k, v in TUNED_GRID.items()},
                 **outer_cfg,
                 **CONSTANT_PARAMS,
+                "lr": args.lr,
+                "train_kind": args.train_kind,
                 "epochs": 313,
                 "name": "inner_tune",
         }
