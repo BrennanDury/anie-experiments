@@ -99,8 +99,6 @@ def training_epoch(loader, model, kind, loss_fn, optim, scheduler=None, grad_cli
             preds = trajectory_preds
             targets = trajectory
         loss = loss_fn(preds, targets)
-        loss_initial_conditions = loss_fn(initial_conditions_pred, initial_conditions)
-        loss = loss + loss_initial_conditions
         loss.backward()
         if grad_clip_norm > 0.0:
             nn.utils.clip_grad_norm_(
@@ -115,7 +113,7 @@ def training_epoch(loader, model, kind, loss_fn, optim, scheduler=None, grad_cli
         n_batches += 1
     return running_loss / n_batches
 
-def evaluation_epoch(loader, model, kind, loss_fn, device=None):
+def evaluation_epoch(loader, model, kind, loss_fn, device=None, compute_initial_conditions_loss=False):
     running_loss = 0.0
     n_batches = 0
     for batch in loader:
@@ -123,8 +121,14 @@ def evaluation_epoch(loader, model, kind, loss_fn, device=None):
         if device:
             initial_conditions = initial_conditions.to(device)
             trajectory = trajectory.to(device)
-        preds = get_prediction(initial_conditions, trajectory, model, kind)
-        loss = loss_fn(preds, trajectory)
+        initial_conditions_pred, trajectory_preds = get_prediction(initial_conditions, trajectory, model, kind)
+        if compute_initial_conditions_loss:
+            preds = torch.cat(initial_conditions_pred, trajectory_preds, dim=1)
+            targets = torch.cat(initial_conditions, trajectory, dim=1)
+        else:
+            preds = trajectory_preds
+            targets = trajectory
+        loss = loss_fn(preds, targets)
         running_loss += loss.item()
         model.clear_kv_cache()
         n_batches += 1
