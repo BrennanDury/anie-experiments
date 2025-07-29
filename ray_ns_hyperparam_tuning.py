@@ -94,7 +94,7 @@ def train_fn(config, ds):
                                           S=[1, 1]),
                                  Q=Q, patch_shape=cfg["patch_shape"])
 
-    time_width = cfg["n_timesteps"] + 1 if cfg["train_kind"] == "acausal" else cfg["n_timesteps"]
+    time_width = cfg["n_timesteps"] + 1 if cfg["train_kind"] == "acausal_wide" else cfg["n_timesteps"]
     if cfg["positional_encoding"] == "coordinate":
         pos_enc = PositionalEncoding(time_width, Hp, Wp)
         pos_unenc = PositionalUnencoding(time_width, Hp, Wp)
@@ -150,7 +150,7 @@ def train_fn(config, ds):
     one_step_pipeline = Pipeline(one_step_model, encoder, decoder, pos_enc, pos_unenc).to(device)
     generate_pipeline = Pipeline(generate_model, encoder, decoder, pos_enc, pos_unenc).to(device)
 
-    pipelines = {"acausal": acausal_pipeline, "one-step": one_step_pipeline, "generate": generate_pipeline}
+    pipelines = {"acausal_narrow": acausal_pipeline, "acausal_wide": acausal_pipeline, "one-step": one_step_pipeline, "generate": generate_pipeline}
     train_pipeline = pipelines[cfg["train_kind"]]
     val_pipeline = pipelines[cfg["val_kind"]]
 
