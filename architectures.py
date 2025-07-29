@@ -70,6 +70,33 @@ class PatchwiseMLP(nn.Module):
         out = out.contiguous().view(B, T, H_prime, W_prime, C_out)  # (B, T, H', W', d_2)
         return out
 
+class PatchwiseMLP_act(nn.Module):
+    def __init__(self, input_dim, output_dim, hidden_dims=[32,32],K=[4,4],S=[4,4]):
+        super().__init__()
+        self.conv_layer1 = nn.Conv2d(input_dim, hidden_dims[0],
+                                     kernel_size=K,
+                                     stride=S)
+
+        self.fc1 = nn.Linear(hidden_dims[0], hidden_dims[1])
+        self.fc2 = nn.Linear(hidden_dims[1], output_dim)
+        self.relu1 = nn.ReLU()
+        self.relu2 = nn.ReLU()
+
+    def forward(self, x):
+        B, T, H, W, Q = x.shape
+
+        out = x.permute(0, 1, 4, 2, 3).reshape(B * T, Q, H, W)  # (B*T, Q, H, W)
+        out = self.conv_layer1(out)  # (B*T, hidden_dim, H', W')
+        out = out.permute(0, 2, 3, 1)  # (B*T, H', W', hidden_dim)
+        out = self.relu1(out)
+        out = self.fc1(out)  # (B*T, H', W', hidden_ff)
+        out = self.relu2(out)
+        out = self.fc2(out)  # (B*T, H', W', out_dim)
+
+        _BT, H_prime, W_prime, C_out = out.shape
+        out = out.contiguous().view(B, T, H_prime, W_prime, C_out)  # (B, T, H', W', out_dim)
+        return out
+
 class PatchwiseMLP_norm(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_dims=[32,32],K=[4,4],S=[4,4]):
         super().__init__()

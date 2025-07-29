@@ -5,7 +5,7 @@ import ray
 from ray import tune
 from ray.tune import Checkpoint
 from data import load_navier_stokes_tensor
-from architectures import TrimTransformer, PatchwiseMLP, PatchwiseMLP_norm, TimestepwiseMLP, \
+from architectures import TrimTransformer, PatchwiseMLP, PatchwiseMLP_norm, PatchwiseMLP_act, TimestepwiseMLP, \
     PositionalEncoding, PositionalUnencoding, RoPENd, RoPENdUnencoding, \
     LearnedPositionalEncoding, LearnedPositionalUnencoding, DecoderWrapper
 from kind_wrappers import AcausalWrapper, OneStepWrapper, GenerateWrapper
@@ -29,7 +29,7 @@ def derive_dependent_hparams(cfg: dict) -> dict:
         cfg["encoder_output_dim"] = d_model
         cfg["encoder_channels"] = [d_model, d_model]
 
-    cfg["dim_feedforward"] = d_model * 2
+    cfg["dim_feedforward"] = d_model * 4
 
     if cfg["decoder_kind"] == "timestepwise":
         cfg["decoder_channels"] = [64, 256]
@@ -60,8 +60,10 @@ def train_fn(config, ds):
 
     N, H, W, Q = 128, 64, 64, 1
 
-    if cfg["norm_mlp"]:
+    if cfg["mlp_kind"] == "norm":
         MLPClass = PatchwiseMLP_norm
+    elif cfg["mlp_kind"] == "act":
+        MLPClass = PatchwiseMLP_act
     else:
         MLPClass = PatchwiseMLP
 
@@ -244,7 +246,6 @@ def main():
     TUNED_GRID = {
         "lr":                 [args.lr],
         "decoder_kind":       ["timestepwise", "patchwise"],
-        "norm_mlp":           [True, False],
         "positional_encoding": ["coordinate", "rope", "learned"],
     }
 
@@ -265,6 +266,7 @@ def main():
         "n_modules": 3,
         "r": 0.5,
         "patch_shape": [4, 4],
+        "mlp_kind": "act",
     }
 
     outer_keys = list(SEARCH_GRID.keys())
