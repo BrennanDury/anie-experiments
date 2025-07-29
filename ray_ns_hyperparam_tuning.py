@@ -1,11 +1,10 @@
 import os
 import numpy as np
 import torch
-import math
 import ray
 from ray import tune
 from ray.tune import Checkpoint
-from data import load_navier_stokes_tensor, NavierStokesDataset
+from data import load_navier_stokes_tensor
 from architectures import TrimTransformer, PatchwiseMLP, PatchwiseMLP_norm, TimestepwiseMLP, \
     PositionalEncoding, PositionalUnencoding, RoPENd, RoPENdUnencoding, \
     LearnedPositionalEncoding, LearnedPositionalUnencoding, DecoderWrapper
@@ -19,7 +18,6 @@ import time
 import tempfile, os
 from itertools import product
 import argparse
-import pandas as pd
 
 def derive_dependent_hparams(cfg: dict) -> dict:
     d_model = cfg["d_model"]
@@ -214,7 +212,6 @@ def train_fn(config, ds):
     if torch.distributed.is_initialized():
         torch.distributed.destroy_process_group()
 
-
 def main():
     parser = argparse.ArgumentParser(description="Navier–Stokes Ray Tune search")
     parser.add_argument("--results-dir", type=str, default="tune_results",
@@ -224,7 +221,7 @@ def main():
     results_dir = Path(args.results_dir).resolve()
     results_dir.mkdir(parents=True, exist_ok=True)
 
-    ray.init(object_store_memory=80_000_000_000)
+    ray.init(object_store_memory=200_000_000_000)
 
     n_timesteps = 10
     init_conds, trajs = load_navier_stokes_tensor(Path("ns_data.mat"), n_timesteps=n_timesteps)
@@ -235,11 +232,11 @@ def main():
     datasets = {"train": train, "val": val}
 
     SEARCH_GRID = {
-        "seed":        [0, 1],
-        "share":       [True, False],
-        "picard":      [True, False],
-        "d_model":     [60, 120, 240],
-        "train_kind":  ["acausal", "one-step", "generate"],
+        "seed":        [0],
+        "share":       [False],
+        "picard":      [False],
+        "d_model":     [60],
+        "train_kind":  ["one-step", "acausal", "generate"],
     }
 
     TUNED_GRID = {
@@ -277,7 +274,7 @@ def main():
                 **{k: tune.grid_search(v) for k, v in TUNED_GRID.items()},
                 **outer_cfg,
                 **CONSTANT_PARAMS,
-                "epochs": 200,
+                "epochs": 313,
                 "name": "inner_tune",
         }
 
