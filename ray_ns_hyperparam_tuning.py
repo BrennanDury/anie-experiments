@@ -220,8 +220,8 @@ def main():
     parser.add_argument("--train-kind", type=str, default="one-step", help="Train kind")
     args, _ = parser.parse_known_args()
 
-    results_dir = Path(args.results_dir).resolve()
-    results_dir.mkdir(parents=True, exist_ok=True)
+    base_results_dir = Path(args.results_dir).resolve()
+    base_results_dir.mkdir(parents=True, exist_ok=True)
 
     ray.init(object_store_memory=200_000_000_000)
 
@@ -238,9 +238,11 @@ def main():
         "share":       [False],
         "picard":      [False],
         "d_model":     [60],
+        "train_kind":  [args.train_kind],
     }
 
     TUNED_GRID = {
+        "lr":                 [args.lr],
         "decoder_kind":       ["timestepwise", "patchwise"],
         "norm_mlp":           [True, False],
         "positional_encoding": ["coordinate", "rope", "learned"],
@@ -270,13 +272,15 @@ def main():
     for outer_values in product(*(SEARCH_GRID[k] for k in outer_keys)):
         outer_cfg = dict(zip(outer_keys, outer_values))
 
+        outer_tag = "__".join(f"{k}-{v}" for k, v in outer_cfg.items())
+        results_dir = base_results_dir / outer_tag
+        results_dir.mkdir(parents=True, exist_ok=True)
+
         param_space = {
                 **{k: tune.grid_search(v) for k, v in TUNED_GRID.items()},
                 **outer_cfg,
                 **CONSTANT_PARAMS,
-                "lr": args.lr,
-                "train_kind": args.train_kind,
-                "epochs": 313,
+                "epochs": 1,
                 "name": "inner_tune",
         }
 
@@ -294,8 +298,7 @@ def main():
 
         try:
             df = inner_results.get_dataframe()
-            outer_tag = "__".join(f"{k}-{v}" for k, v in outer_cfg.items())
-            csv_path = results_dir / f"tune_{outer_tag}.csv"
+            csv_path = results_dir / f"tune_results.csv"
             df.to_csv(csv_path, index=False)
             print(f"[INFO] Saved tuning results to {csv_path}")
         except Exception as e:
