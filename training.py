@@ -135,13 +135,14 @@ def evaluation_epoch(loader, model, kind, loss_fn, device=None, compute_initial_
     return running_loss / n_batches
 
 class Pipeline(nn.Module):
-    def __init__(self, model, encoder, decoder, positional_encoding, positional_unencoding):
+    def __init__(self, model, encoder, decoder, positional_encoding, positional_unencoding, residual=False):
         super().__init__()
         self.model = model  # (B, T*Hp*Wp, C) -> (B, T*Hp*Wp, C)
         self.encoder = encoder  # (B, T, H, W, Q) -> (B, T, Hp, Wp, C)
         self.decoder = decoder  # (B, T, Hp, Wp, C+P) -> (B, T, H, W, Q)
         self.positional_encoding = positional_encoding  # (B, T, Hp, Wp, C) -> (B, T, Hp, Wp, C+P)
         self.positional_unencoding = positional_unencoding  # (B, T, Hp, Wp, C+P) -> (B, T, Hp, Wp, C)
+        self.residual = residual
 
     def forward(self, x, t=0):
         """
@@ -149,12 +150,14 @@ class Pipeline(nn.Module):
         t : int
         return : (B, T, H, W, Q)
         """
-        x = self.encoder(x)
-        x = self.positional_encoding(x, t)
-        x = self.model(x.flatten(1, 3)).reshape_as(x)
-        x = self.positional_unencoding(x, t)
-        x = self.decoder(x)
-        return x
+        y = self.encoder(x)
+        y = self.positional_encoding(y, t)
+        y = self.model(y.flatten(1, 3)).reshape_as(y)
+        y = self.positional_unencoding(y, t)
+        y = self.decoder(y)
+        if self.residual:
+            y = x + y
+        return y
 
     def clear_kv_cache(self):
         self.model.clear_kv_cache()

@@ -11,7 +11,7 @@ from architectures import TrimTransformer, PatchwiseMLP, PatchwiseMLP_norm, Patc
     PositionalEncoding, PositionalUnencoding, RoPENd, RoPENdUnencoding, \
     LearnedPositionalEncoding, LearnedPositionalUnencoding, DecoderWrapper
 from kind_wrappers import AcausalWrapper, OneStepWrapper, GenerateWrapper
-from architecture_wrappers import PicardIterations, ArbitraryIterations, \
+from architecture_wrappers import Iterations, \
     make_weight_shared_modules, make_weight_unshared_modules
 from training import Pipeline, training_epoch, evaluation_epoch
 from functools import partial
@@ -60,6 +60,7 @@ def derive_dependent_hparams(cfg: dict) -> dict:
         cfg["encoder_activation"] = nn.ReLU
 
     cfg["decoder_activation"] = cfg["encoder_activation"]
+    cfg["outer_residual"] = not cfg["inner_residual"]
     return cfg
 
 
@@ -151,13 +152,16 @@ def train_fn(config, ds):
     else:
         modules = make_weight_unshared_modules(make_module, n_modules=cfg["n_modules"])
 
-    if cfg["picard"]:
-        model = PicardIterations(modules, q=Q, r=cfg["r"])
+    if cfg["inner_residual"]:
+        a = 1.0
+        b = 1.0
     else:
-        model = ArbitraryIterations(modules)
+        a = 0.0
+        b = 1.0
+    model = Iterations(modules, a=a, b=b)
 
     mask = None
-    if cfg["train_kind"] == "one-step":  # only needed for one-step
+    if cfg["train_kind"] == "one-step":
         n_patches = Hp * Wp
         idx = torch.arange(n_tokens, dtype=torch.int32)
         block_size = n_patches
@@ -168,9 +172,9 @@ def train_fn(config, ds):
     one_step_model = OneStepWrapper(model, mask=mask)
     generate_model = GenerateWrapper(model)
 
-    acausal_pipeline = Pipeline(acausal_model, encoder, decoder, pos_enc, pos_unenc).to(device)
-    one_step_pipeline = Pipeline(one_step_model, encoder, decoder, pos_enc, pos_unenc).to(device)
-    generate_pipeline = Pipeline(generate_model, encoder, decoder, pos_enc, pos_unenc).to(device)
+    acausal_pipeline = Pipeline(acausal_model, encoder, decoder, pos_enc, pos_unenc, residual=cfg["outer_residual"]).to(device)
+    one_step_pipeline = Pipeline(one_step_model, encoder, decoder, pos_enc, pos_unenc, residual=cfg["outer_residual"]).to(device)
+    generate_pipeline = Pipeline(generate_model, encoder, decoder, pos_enc, pos_unenc, residual=cfg["outer_residual"]).to(device)
 
     pipelines = {"acausal_narrow": acausal_pipeline, "acausal_wide": acausal_pipeline, "one-step": one_step_pipeline, "generate": generate_pipeline}
     train_pipeline = pipelines[cfg["train_kind"]]
@@ -263,11 +267,11 @@ def main():
     datasets = {"train": train, "val": val}
 
     SEARCH_GRID = {
-        "seed":        [0],
-        "share":       [False, True],
-        "picard":      [False, True],
-        "d_model":     [60],
-        "train_kind":  [args.train_kind],
+        "seed":                [0],
+        "share":               [False, True],
+        "inner_residual":      [False, True],
+        "d_model":             [60],
+        "train_kind":          [args.train_kind],
     }
 
     TUNED_GRID = {
@@ -293,7 +297,6 @@ def main():
         "dropout": 0.1,
         "n_layers": 4,
         "n_modules": 3,
-        "r": 0.5,
         "patch_shape": [4, 4],
         "compute_initial_conditions_train_loss": False,
         "compute_initial_conditions_val_loss": False,
