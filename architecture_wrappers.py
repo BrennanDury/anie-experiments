@@ -3,13 +3,16 @@ import torch.nn as nn
 
 
 class Iterations(nn.Module):
-    def __init__(self, modules: nn.ModuleList, a: float = 1.0, b: float = 1.0):
+    def __init__(self, modules: nn.ModuleList, a: float = 1.0, b: float = 1.0, projection=None):
         super().__init__()
         self.steps = nn.ModuleList([Residual(module, a, b) for module in modules])
 
-    def forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, projection=None, *args, **kwargs) -> torch.Tensor:
+        if projection is None:
+            projection = lambda x : x
         for step in self.steps:
             x = step(x, *args, **kwargs)
+            x = projection(x)
         return x
 
     def clear_kv_cache(self):

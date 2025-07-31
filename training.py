@@ -150,9 +150,11 @@ class Pipeline(nn.Module):
         t : int
         return : (B, T, H, W, Q)
         """
+
         y = self.encoder(x)
         y = self.positional_encoding(y, t)
-        y = self.model(y.flatten(1, 3)).reshape_as(y)
+        projection = lambda x: self.positional_encoding(self.positional_unencoding(x.reshape_as(y), t), t).reshape_as(x)
+        y = self.model(y.flatten(1, 3), projection).reshape_as(y)
         y = self.positional_unencoding(y, t)
         y = self.decoder(y)
         if self.residual:
