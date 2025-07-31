@@ -1,6 +1,8 @@
 import os
 import numpy as np
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import ray
 from ray import tune
 from ray.tune import Checkpoint
@@ -23,13 +25,14 @@ def derive_dependent_hparams(cfg: dict) -> dict:
     d_model = cfg["d_model"]
 
     if cfg["positional_encoding"] == "coordinate":
-        cfg["encoder_output_dim"] = d_model - 3
-        cfg["encoder_channels"] = [d_model - 3, d_model - 3]
+        s = d_model - 3
     else:
-        cfg["encoder_output_dim"] = d_model
-        cfg["encoder_channels"] = [d_model, d_model]
-
-    cfg["dim_feedforward"] = d_model * 4
+        s = d_model
+    t = s * cfg["encoder_ff_factor"]
+    w = d_model * cfg["ff_factor"]
+    cfg["encoder_output_dim"] = s
+    cfg["encoder_channels"] = [t, t]
+    cfg["dim_feedforward"] = w
 
     if cfg["decoder_kind"] == "timestepwise":
         cfg["decoder_channels"] = [64, 256]
@@ -37,11 +40,26 @@ def derive_dependent_hparams(cfg: dict) -> dict:
         cfg["decoder_channels"] = cfg["encoder_channels"]
 
     if cfg["train_kind"] == "acausal":
-        cfg["train_kind"] = "acausal_narrow"
-        cfg["val_kind"] = "acausal_narrow"
+        if cfg["narrow"]:
+            cfg["train_kind"] = "acausal_narrow"
+            cfg["val_kind"] = "acausal_narrow"
+        else:
+            cfg["train_kind"] = "acausal_wide"
+            cfg["val_kind"] = "acausal_wide"
     else:
         cfg["val_kind"] = "generate"
 
+    if cfg["model_activation"] == "ELU":
+        cfg["model_activation"] = F.elu
+    else:
+        cfg["model_activation"] = F.relu
+
+    if cfg["encoder_activation"] == "ELU":
+        cfg["encoder_activation"] = nn.ELU
+    else:
+        cfg["encoder_activation"] = nn.ReLU
+
+    cfg["decoder_activation"] = cfg["encoder_activation"]
     return cfg
 
 
@@ -76,7 +94,8 @@ def train_fn(config, ds):
                        output_dim=cfg["encoder_output_dim"],
                        hidden_dims=cfg["encoder_channels"],
                        K=cfg["patch_shape"],
-                       S=cfg["patch_shape"])
+                       S=cfg["patch_shape"],
+                       activation=cfg["encoder_activation"])
 
     Hp = H // cfg["patch_shape"][0]
     Wp = W // cfg["patch_shape"][1]
@@ -85,13 +104,15 @@ def train_fn(config, ds):
     if cfg["decoder_kind"] == "timestepwise":
         decoder = TimestepwiseMLP(in_shape=torch.Size([Hp, Wp, cfg["encoder_output_dim"]]),
                                   hidden_dims=cfg["decoder_channels"],
-                                  out_shape=torch.Size([H, W, Q]))
+                                  out_shape=torch.Size([H, W, Q]),
+                                  activation=cfg["decoder_activation"])
     else:
         decoder = DecoderWrapper(MLPClass(input_dim=cfg["encoder_output_dim"],
                                           output_dim=Q * patch_size,
                                           hidden_dims=list(reversed(cfg["encoder_channels"])),
                                           K=[1, 1],
-                                          S=[1, 1]),
+                                          S=[1, 1],
+                                          activation=cfg["decoder_activation"]),
                                  Q=Q, patch_shape=cfg["patch_shape"])
 
     time_width = cfg["n_timesteps"] + 1 if cfg["train_kind"] == "acausal_wide" else cfg["n_timesteps"]
@@ -122,7 +143,8 @@ def train_fn(config, ds):
                           dropout=cfg["dropout"],
                           n_layers=cfg["n_layers"],
                           scale=scale,
-                          input_dim=transformer_input_dim)
+                          input_dim=transformer_input_dim,
+                          activation=cfg["model_activation"])
 
     if cfg["share"]:
         modules = make_weight_shared_modules(make_module, n_modules=cfg["n_modules"])
@@ -242,16 +264,18 @@ def main():
 
     SEARCH_GRID = {
         "seed":        [0],
-        "share":       [False],
-        "picard":      [False],
+        "share":       [False, True],
+        "picard":      [False, True],
         "d_model":     [60],
         "train_kind":  [args.train_kind],
     }
 
     TUNED_GRID = {
-        "lr":                 [args.lr],
-        "decoder_kind":       ["timestepwise", "patchwise"],
+        "lr":                  [args.lr],
         "positional_encoding": ["coordinate", "rope", "learned"],
+        "decoder_kind":        ["timestepwise", "patchwise"],
+        "mlp_kind":            ["act", "norm"],
+        "encoder_activation":  ["ReLU", "ELU"],
     }
 
     CONSTANT_PARAMS = {
@@ -271,9 +295,12 @@ def main():
         "n_modules": 3,
         "r": 0.5,
         "patch_shape": [4, 4],
-        "mlp_kind": "act",
         "compute_initial_conditions_train_loss": False,
-        "compute_initial_conditions_val_loss": False
+        "compute_initial_conditions_val_loss": False,
+        "ff_factor": 4,
+        "encoder_ff_factor": 4,
+        "narrow": True,
+        "model_activation": "ReLU",
     }
 
     outer_keys = list(SEARCH_GRID.keys())
@@ -303,15 +330,7 @@ def main():
             tune_config=tune_config,
             run_config=run_config,
         )
-        inner_results = tuner.fit()
-
-        try:
-            df = inner_results.get_dataframe()
-            csv_path = results_dir / f"tune_results.csv"
-            df.to_csv(csv_path, index=False)
-            print(f"[INFO] Saved tuning results to {csv_path}")
-        except Exception as e:
-            print(f"[WARN] Could not save tuning results: {e}")
+        tuner.fit()
 
 if __name__ == "__main__":
     main()

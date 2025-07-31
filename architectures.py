@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import math
 from trim_transformer.transformer_layers import TrimTransformerEncoderLayer, TrimTransformerEncoder
 
@@ -8,7 +9,7 @@ def galerkin_init(param, gain=0.01, diagonal_weight=0.01):
     param.data += diagonal_weight * torch.diag(torch.ones(param.size(-1), dtype=torch.float, device=param.device))
 
 class TrimTransformer(nn.Module):
-    def __init__(self, d_model: int, nhead: int, dim_feedforward: int, dropout: float, n_layers: int, scale: float | None = None, input_dim: int | None = None):
+    def __init__(self, d_model: int, nhead: int, dim_feedforward: int, dropout: float, n_layers: int, scale: float | None = None, input_dim: int | None = None, activation=F.relu):
         super().__init__()
         norm_k = nn.LayerNorm(d_model//nhead)
         norm_v = nn.LayerNorm(d_model//nhead)
@@ -24,6 +25,7 @@ class TrimTransformer(nn.Module):
             k_weight_init=galerkin_init,
             v_weight_init=galerkin_init,
             scale=scale,
+            activation=activation,
         )
         self.transformer_encoder = TrimTransformerEncoder(encoder_layer, num_layers=n_layers)
         if input_dim is not None:
@@ -45,14 +47,14 @@ class TrimTransformer(nn.Module):
         self.transformer_encoder.clear_kv_cache()
 
 class PatchwiseMLP(nn.Module):
-    def __init__(self, input_dim, output_dim, hidden_dims=[32,32], K=[4,4], S=[4,4]):
+    def __init__(self, input_dim, output_dim, hidden_dims=[32,32], K=[4,4], S=[4,4], activation=nn.ReLU):
         super().__init__()
         self.conv_layer1 = nn.Conv2d(input_dim, hidden_dims[0],
                                      kernel_size=K,
                                      stride=S)
 
         self.fc1 = nn.Linear(hidden_dims[0], hidden_dims[1])
-        self.relu2 = nn.ReLU()
+        self.relu2 = activation()
         self.fc2 = nn.Linear(hidden_dims[1], output_dim)
 
     def forward(self, x):
@@ -70,8 +72,31 @@ class PatchwiseMLP(nn.Module):
         out = out.contiguous().view(B, T, H_prime, W_prime, C_out)  # (B, T, H', W', d_2)
         return out
 
+class PatchwiseMLP_remove(nn.Module):
+    def __init__(self, input_dim, output_dim, hidden_dims=[32,32],K=[4,4],S=[4,4], activation=nn.ReLU):
+        super().__init__()
+        self.conv_layer1 = nn.Conv2d(input_dim, hidden_dims[0],
+                                     kernel_size=K,
+                                     stride=S)
+
+        self.fc2 = nn.Linear(hidden_dims[0], output_dim)
+        self.relu2 = activation()
+
+    def forward(self, x):
+        B, T, H, W, Q = x.shape
+
+        out = x.permute(0, 1, 4, 2, 3).reshape(B * T, Q, H, W)  # (B*T, Q, H, W)
+        out = self.conv_layer1(out)  # (B*T, hidden_dim, H', W')
+        out = out.permute(0, 2, 3, 1)  # (B*T, H', W', hidden_dim)
+        out = self.relu2(out)
+        out = self.fc2(out)  # (B*T, H', W', out_dim)
+
+        _BT, H_prime, W_prime, C_out = out.shape
+        out = out.contiguous().view(B, T, H_prime, W_prime, C_out)  # (B, T, H', W', out_dim)
+        return out
+
 class PatchwiseMLP_act(nn.Module):
-    def __init__(self, input_dim, output_dim, hidden_dims=[32,32],K=[4,4],S=[4,4]):
+    def __init__(self, input_dim, output_dim, hidden_dims=[32,32],K=[4,4],S=[4,4], activation=nn.ReLU):
         super().__init__()
         self.conv_layer1 = nn.Conv2d(input_dim, hidden_dims[0],
                                      kernel_size=K,
@@ -79,8 +104,8 @@ class PatchwiseMLP_act(nn.Module):
 
         self.fc1 = nn.Linear(hidden_dims[0], hidden_dims[1])
         self.fc2 = nn.Linear(hidden_dims[1], output_dim)
-        self.relu1 = nn.ReLU()
-        self.relu2 = nn.ReLU()
+        self.relu1 = activation()
+        self.relu2 = activation()
 
     def forward(self, x):
         B, T, H, W, Q = x.shape
@@ -98,7 +123,7 @@ class PatchwiseMLP_act(nn.Module):
         return out
 
 class PatchwiseMLP_norm(nn.Module):
-    def __init__(self, input_dim, output_dim, hidden_dims=[32,32],K=[4,4],S=[4,4]):
+    def __init__(self, input_dim, output_dim, hidden_dims=[32,32],K=[4,4],S=[4,4], activation=nn.ReLU):
         super().__init__()
         self.conv_layer1 = nn.Conv2d(input_dim, hidden_dims[0],
                                      kernel_size=K,
@@ -106,8 +131,8 @@ class PatchwiseMLP_norm(nn.Module):
 
         self.fc1 = nn.Linear(hidden_dims[0], hidden_dims[1])
         self.fc2 = nn.Linear(hidden_dims[1], output_dim)
-        self.relu1 = nn.ReLU()
-        self.relu2 = nn.ReLU()
+        self.relu1 = activation()
+        self.relu2 = activation()
         self.norm1 = nn.LayerNorm(hidden_dims[0])
         self.norm2 = nn.LayerNorm(hidden_dims[1])
 
