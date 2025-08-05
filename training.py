@@ -153,7 +153,7 @@ class Pipeline(nn.Module):
 
         y = self.encoder(x)
         y = self.positional_encoding(y, t)
-        projection = lambda x: self.positional_encoding(self.positional_unencoding(x.reshape_as(y), t), t).reshape_as(x)
+        projection = lambda z: self.positional_encoding(self.positional_unencoding(z.reshape_as(y), t), t).reshape_as(z)
         y = self.model(y.flatten(1, 3), projection).reshape_as(y)
         y = self.positional_unencoding(y, t)
         y = self.decoder(y)
