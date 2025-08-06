@@ -1,3 +1,4 @@
+from re import I
 import torch
 from torch import Tensor, nn
 
@@ -76,13 +77,32 @@ def get_prediction(initial_conditions: Tensor, trajectory: Tensor, model: nn.Mod
         return acausal_prediction_narrow(initial_conditions, model, trajectory.shape[1])
     elif kind == "generate":
         return generate_prediction(initial_conditions, model, trajectory.shape[1])
-    elif kind == "one-step":
+    elif kind == "one_step":
         full_trajectory = torch.cat([initial_conditions, trajectory], dim=1)
         return one_step_prediction(full_trajectory[:, :-1], model)
     else:
         raise ValueError(f"Invalid kind: {kind}")
 
-def training_epoch(loader, model, kind, loss_fn, optim, scheduler=None, grad_clip_norm=1.0, device=None, compute_initial_conditions_loss=False):
+def get_prediction_new(initial_conditions: Tensor,
+                       trajectory: Tensor,
+                       model: nn.Module,
+                       encoder: nn.Module,
+                       decoder: nn.Module,
+                       kind: str,
+                       decode_initial_conditions: bool) -> Tensor:
+    if kind == "one_step":
+        input_trajectory = torch.cat([initial_conditions, trajectory], dim=1)
+        y, z = model.trajectory_to_trajectory(encoder(input_trajectory), kind=kind)
+    else:
+        y, z = model.initial_conditions_to_trajectory(encoder(initial_conditions), trajectory.shape[1], kind=kind)
+    z = decoder(z)
+    if decode_initial_conditions:
+        y = decoder(y)
+    else:
+        y = initial_conditions
+    return y, z
+
+def training_epoch(loader, model, encoder, decoder, kind, loss_fn, optim, scheduler=None, grad_clip_norm=1.0, device=None, compute_initial_conditions_loss=False):
     running_loss = 0.0
     n_batches = 0
     for batch in loader:
@@ -91,7 +111,8 @@ def training_epoch(loader, model, kind, loss_fn, optim, scheduler=None, grad_cli
             initial_conditions = initial_conditions.to(device)
             trajectory = trajectory.to(device)
         optim.zero_grad()
-        initial_conditions_pred, trajectory_preds = get_prediction(initial_conditions, trajectory, model, kind)
+
+        initial_conditions_pred, trajectory_preds = get_prediction_new(initial_conditions, trajectory, model, encoder, decoder, kind, decode_initial_conditions=compute_initial_conditions_loss)
         if compute_initial_conditions_loss:
             preds = torch.cat(initial_conditions_pred, trajectory_preds, dim=1)
             targets = torch.cat(initial_conditions, trajectory, dim=1)
@@ -113,7 +134,7 @@ def training_epoch(loader, model, kind, loss_fn, optim, scheduler=None, grad_cli
         n_batches += 1
     return running_loss / n_batches
 
-def evaluation_epoch(loader, model, kind, loss_fn, device=None, compute_initial_conditions_loss=False):
+def evaluation_epoch(loader, model, encoder, decoder, kind, loss_fn, device=None, compute_initial_conditions_loss=False):
     running_loss = 0.0
     n_batches = 0
     for batch in loader:
@@ -121,7 +142,7 @@ def evaluation_epoch(loader, model, kind, loss_fn, device=None, compute_initial_
         if device:
             initial_conditions = initial_conditions.to(device)
             trajectory = trajectory.to(device)
-        initial_conditions_pred, trajectory_preds = get_prediction(initial_conditions, trajectory, model, kind)
+        initial_conditions_pred, trajectory_preds = get_prediction_new(initial_conditions, trajectory, model, encoder, decoder, kind, decode_initial_conditions=compute_initial_conditions_loss)
         if compute_initial_conditions_loss:
             preds = torch.cat(initial_conditions_pred, trajectory_preds, dim=1)
             targets = torch.cat(initial_conditions, trajectory, dim=1)

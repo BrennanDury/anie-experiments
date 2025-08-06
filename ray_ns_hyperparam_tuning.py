@@ -1,4 +1,5 @@
 import os
+from tkinter.constants import TRUE
 import numpy as np
 import torch
 import torch.nn as nn
@@ -7,29 +8,23 @@ import ray
 from ray import tune
 from ray.tune import Checkpoint
 from data import load_navier_stokes_tensor
-from architectures import TrimTransformer, PatchwiseMLP, PatchwiseMLP_norm, PatchwiseMLP_act, TimestepwiseMLP, \
+from architectures import PatchwiseMLP, PatchwiseMLP_norm, PatchwiseMLP_act, PatchwiseMLP_remove, TimestepwiseMLP, \
     PositionalEncoding, PositionalUnencoding, RoPENd, RoPENdUnencoding, \
-    LearnedPositionalEncoding, LearnedPositionalUnencoding, DecoderWrapper
-from kind_wrappers import AcausalWrapper, OneStepWrapper, GenerateWrapper
-from architecture_wrappers import Iterations, \
-    make_weight_shared_modules, make_weight_unshared_modules
-from training import Pipeline, training_epoch, evaluation_epoch
-from functools import partial
+    LearnedPositionalEncoding, LearnedPositionalUnencoding, DecoderWrapper, TransformerPipeline
+from training import training_epoch, evaluation_epoch
 from pathlib import Path
 import time
 import tempfile, os
 from itertools import product
 import argparse
 
-def derive_dependent_hparams(cfg: dict) -> dict:
-    d_model = cfg["d_model"]
-
+def derive_dependent_hparams(cfg: dict) -> dict:    
     if cfg["positional_encoding"] == "coordinate":
-        s = d_model - 3
+        s = cfg["d_model"] - 3
     else:
-        s = d_model
+        s = cfg["d_model"]
     t = s * cfg["encoder_ff_factor"]
-    w = d_model * cfg["ff_factor"]
+    w = cfg["d_model"] * cfg["ff_factor"]
     cfg["encoder_output_dim"] = s
     cfg["encoder_channels"] = [t, t]
     cfg["dim_feedforward"] = w
@@ -59,8 +54,11 @@ def derive_dependent_hparams(cfg: dict) -> dict:
     else:
         cfg["encoder_activation"] = nn.ReLU
 
-    cfg["decoder_activation"] = cfg["encoder_activation"]
-    cfg["outer_residual"] = not cfg["inner_residual"]
+    if cfg["decoder_activation"] == "ELU":
+        cfg["decoder_activation"] = nn.ELU
+    else:
+        cfg["decoder_activation"] = nn.ReLU
+
     return cfg
 
 
@@ -88,6 +86,8 @@ def train_fn(config, ds):
         MLPClass = PatchwiseMLP_norm
     elif cfg["mlp_kind"] == "act":
         MLPClass = PatchwiseMLP_act
+    elif cfg["mlp_kind"] == "remove":
+        MLPClass = PatchwiseMLP_remove
     else:
         MLPClass = PatchwiseMLP
 
@@ -136,49 +136,25 @@ def train_fn(config, ds):
     n_tokens = time_width * Hp * Wp
     scale = 1.0 / n_tokens
 
+    model = TransformerPipeline(pos_enc,
+                                pos_unenc,
+                                d_model=cfg["d_model"],
+                                nhead=cfg["n_head"],
+                                dim_feedforward=cfg["dim_feedforward"],
+                                dropout=cfg["dropout"],
+                                n_layers=cfg["n_layers"],
+                                scale=scale,
+                                input_dim=transformer_input_dim,
+                                activation=cfg["model_activation"],
+                                n_modules=cfg["n_modules"],
+                                inner_wrap=cfg["inner_wrap"],
+                                share=cfg["share"]).to(device)
 
-    make_module = partial(TrimTransformer,
-                          d_model=cfg["d_model"],
-                          nhead=cfg["n_head"],
-                          dim_feedforward=cfg["dim_feedforward"],
-                          dropout=cfg["dropout"],
-                          n_layers=cfg["n_layers"],
-                          scale=scale,
-                          input_dim=transformer_input_dim,
-                          activation=cfg["model_activation"])
-
-    if cfg["share"]:
-        modules = make_weight_shared_modules(make_module, n_modules=cfg["n_modules"])
-    else:
-        modules = make_weight_unshared_modules(make_module, n_modules=cfg["n_modules"])
-
-    if cfg["inner_residual"]:
-        a = 1.0
-        b = 1.0
-    else:
-        a = 0.0
-        b = 1.0
-    model = Iterations(modules, a=a, b=b)
-
-    mask = None
-    if cfg["train_kind"] == "one-step":
-        n_patches = Hp * Wp
-        idx = torch.arange(n_tokens, dtype=torch.int32)
-        block_size = n_patches
-        mask_after = block_size * ((idx // block_size) + 1) - 1
-        mask = mask_after.to(device)
-
-    acausal_model = AcausalWrapper(model)
-    one_step_model = OneStepWrapper(model, mask=mask)
-    generate_model = GenerateWrapper(model)
-
-    acausal_pipeline = Pipeline(acausal_model, encoder, decoder, pos_enc, pos_unenc, residual=cfg["outer_residual"]).to(device)
-    one_step_pipeline = Pipeline(one_step_model, encoder, decoder, pos_enc, pos_unenc, residual=cfg["outer_residual"]).to(device)
-    generate_pipeline = Pipeline(generate_model, encoder, decoder, pos_enc, pos_unenc, residual=cfg["outer_residual"]).to(device)
-
-    pipelines = {"acausal_narrow": acausal_pipeline, "acausal_wide": acausal_pipeline, "one-step": one_step_pipeline, "generate": generate_pipeline}
-    train_pipeline = pipelines[cfg["train_kind"]]
-    val_pipeline = pipelines[cfg["val_kind"]]
+    pos_enc = pos_enc.to(device)
+    pos_unenc = pos_unenc.to(device)
+    model = model.to(device)
+    encoder = encoder.to(device)
+    decoder = decoder.to(device)
 
     l1 = list(pos_enc.parameters()) if cfg["positional_encoding"] == "learned" else []
     l2 = list(model.parameters()) + list(encoder.parameters()) + list(decoder.parameters())
@@ -193,7 +169,6 @@ def train_fn(config, ds):
     else:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optim, T_max=cfg["T_max"], eta_min=cfg["min_lr"])
 
-
     train_losses = []
     val_losses = []
     epoch_times = []
@@ -202,16 +177,31 @@ def train_fn(config, ds):
     best_val_loss = float("inf")
     for epoch in range(1, cfg["epochs"] + 1):
         epoch_start_time = time.time()
-        train_pipeline.train()
+        model.train()
+        encoder.train()
+        decoder.train()
         if epoch <= cfg["warmup_epochs"]:
-            train_loss = training_epoch(train_loader, train_pipeline, cfg["train_kind"], loss_fn, optim,
-                                         scheduler=scheduler, grad_clip_norm=cfg["grad_clip_norm"], device=device, compute_initial_conditions_loss=cfg["compute_initial_conditions_train_loss"])
+            train_loss = training_epoch(train_loader, model, encoder, decoder,
+                                        cfg["train_kind"],
+                                        loss_fn,
+                                        optim,
+                                        scheduler=scheduler,
+                                        grad_clip_norm=cfg["grad_clip_norm"],
+                                        device=device,
+                                        compute_initial_conditions_loss=cfg["compute_initial_conditions_train_loss"])
         else:
-            train_loss = training_epoch(train_loader, train_pipeline, cfg["train_kind"], loss_fn, optim,
-                                         grad_clip_norm=cfg["grad_clip_norm"], device=device, compute_initial_conditions_loss=cfg["compute_initial_conditions_train_loss"])
-        val_pipeline.eval()
+            train_loss = training_epoch(train_loader, model, encoder, decoder,
+                                        cfg["train_kind"],
+                                        loss_fn,
+                                        optim,
+                                        grad_clip_norm=cfg["grad_clip_norm"],
+                                        device=device,
+                                        compute_initial_conditions_loss=cfg["compute_initial_conditions_train_loss"])
+        model.eval()
+        encoder.eval()
+        decoder.eval()
         with torch.no_grad():
-            val_loss = evaluation_epoch(val_loader, val_pipeline, cfg["val_kind"], loss_fn, device=device, compute_initial_conditions_loss=cfg["compute_initial_conditions_val_loss"])
+            val_loss = evaluation_epoch(val_loader, model, encoder, decoder, cfg["val_kind"], loss_fn, device=device, compute_initial_conditions_loss=cfg["compute_initial_conditions_val_loss"])
         if epoch > cfg["warmup_epochs"]:
             scheduler.step()
 
@@ -250,7 +240,7 @@ def main():
     parser.add_argument("--results-dir", type=str, default="tune_results",
                         help="Directory where tuning result CSV files will be written.")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-    parser.add_argument("--train-kind", type=str, default="one-step", help="Train kind")
+    parser.add_argument("--train-kind", type=str, default="one_step", help="Train kind")
     args, _ = parser.parse_known_args()
 
     base_results_dir = Path(args.results_dir).resolve()
@@ -267,23 +257,21 @@ def main():
     datasets = {"train": train, "val": val}
 
     SEARCH_GRID = {
-        "seed":                [0],
-        "share":               [False, True],
-        "inner_residual":      [False, True],
-        "d_model":             [60],
-        "train_kind":          [args.train_kind],
+
     }
 
     TUNED_GRID = {
-        "lr":                  [args.lr],
-        "positional_encoding": ["coordinate", "rope", "learned"],
-        "decoder_kind":        ["timestepwise", "patchwise"],
-        "mlp_kind":            ["act", "norm"],
+        "train_kind":          ["generate"],
+        "share":               [True],
         "encoder_activation":  ["ReLU", "ELU"],
+        "decoder_activation":  ["ReLU", "ELU"],
+        "mlp_kind":            ["norm", "act"],
     }
 
     CONSTANT_PARAMS = {
         "data": "ns_data.mat",
+        "seed": 0,
+        "d_model": 60,
         "batch_size": 32,
         "weight_decay": 1e-4,
         "grad_clip_norm": 1.0,
@@ -295,8 +283,6 @@ def main():
         "project_input": False,
         "n_head": 4,
         "dropout": 0.1,
-        "n_layers": 4,
-        "n_modules": 3,
         "patch_shape": [4, 4],
         "compute_initial_conditions_train_loss": False,
         "compute_initial_conditions_val_loss": False,
@@ -304,6 +290,14 @@ def main():
         "encoder_ff_factor": 4,
         "narrow": True,
         "model_activation": "ReLU",
+        "lr": args.lr,
+        "positional_encoding": "rope",
+        "decoder_kind": "patchwise",
+        "inner_wrap": False,
+        "model_activation": "ReLU",
+        "epochs": 313,
+        "n_modules": 3,
+        "n_layers": 2,
     }
 
     outer_keys = list(SEARCH_GRID.keys())

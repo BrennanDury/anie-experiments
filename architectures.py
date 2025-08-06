@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 from trim_transformer.transformer_layers import TrimTransformerEncoderLayer, TrimTransformerEncoder
+import copy
 
 def galerkin_init(param, gain=0.01, diagonal_weight=0.01):
     nn.init.xavier_uniform_(param, gain=gain)
@@ -292,3 +293,151 @@ class LearnedPositionalUnencoding(nn.Module):
     def forward(self, x, t: int):
         _B, Tp = x.shape[0], x.shape[1]
         return x - self.learned_encoding_module.encoding[None, t : t + Tp]
+
+def broadcast_initial_conditions(x: torch.Tensor, length: int) -> torch.Tensor:
+    """
+    x : (B, 1, H, W, Q)
+    return : (B, length, H, W, Q)
+    """
+    return x.repeat(1, length, 1, 1, 1)
+
+def _tie_parameters(src: nn.Module, dst: nn.Module) -> None:
+    for name, param_src in src.named_parameters():
+        sub_dst = dst
+        attr_chain = name.split('.')
+        for attr in attr_chain[:-1]:
+            sub_dst = getattr(sub_dst, attr)
+        sub_dst._parameters[attr_chain[-1]] = param_src
+
+class TransformerPipeline(nn.Module):
+    def __init__(self,
+                      pos_enc: nn.Module,
+                      pos_unenc: nn.Module,
+                      d_model: int,
+                      nhead: int,
+                      dim_feedforward: int,
+                      dropout: float,
+                      n_layers: int,
+                      scale: float | None = None,
+                      input_dim: int | None = None,
+                      activation=F.relu,
+                      n_modules=1,
+                      inner_wrap=False,
+                      share=False,
+                      ):
+        super().__init__()
+        norm_k = nn.LayerNorm(d_model//nhead)
+        norm_v = nn.LayerNorm(d_model//nhead)
+        encoder_layer = TrimTransformerEncoderLayer(
+            d_model=d_model,
+            nhead=nhead,
+            dim_feedforward=dim_feedforward,
+            dropout=dropout,
+            batch_first=True,
+            norm_k=norm_k,
+            norm_v=norm_v,
+            q_weight_init=galerkin_init,
+            k_weight_init=galerkin_init,
+            v_weight_init=galerkin_init,
+            scale=scale,
+            activation=activation,
+        )
+        if share:
+            master = TrimTransformerEncoder(encoder_layer, num_layers=n_layers)
+            self.blocks = nn.ModuleList([master])
+            for _ in range(n_modules - 1):
+                clone = copy.deepcopy(master)
+                _tie_parameters(master, clone)
+                self.blocks.append(clone)
+        else:
+            self.blocks = nn.ModuleList([TrimTransformerEncoder(encoder_layer, num_layers=n_layers) for _ in range(n_modules)])
+
+        if input_dim is not None:
+            self.in_layer = nn.Linear(input_dim, d_model)
+            self.out_layer = nn.Linear(d_model, input_dim)
+        else:
+            self.in_layer = nn.Identity()
+            self.out_layer = nn.Identity()
+        self.inner_wrap = inner_wrap
+        self.pos_enc = pos_enc
+        self.pos_unenc = pos_unenc
+
+    def transformer_forward(self, x: torch.Tensor, t: int = 0, mask=None, use_kv_cache: bool = False, update_kv_cache: bool = False) -> torch.Tensor:
+        if not self.inner_wrap:
+            y = self.pos_enc(x, t)
+        else:
+            y = x
+
+        space_time_shape = y.shape[1:4]
+
+        for block in self.blocks:
+            if self.inner_wrap:
+                z = self.pos_enc(y, t)
+            else:
+                z = y
+
+            z = self.in_layer(z.flatten(1,3))
+            z = block(z, mask=mask, use_kv_cache=use_kv_cache, update_kv_cache=update_kv_cache)
+            z = self.out_layer(z).unflatten(1, space_time_shape)
+
+            if self.inner_wrap:
+                y = self.pos_unenc(z, t) + y
+            else:
+                y = z
+
+        if not self.inner_wrap:
+            x = self.pos_unenc(y, t) + x
+        else:
+            x = y
+        return x
+
+    def generate_forward(self, x: torch.Tensor, T: int) -> torch.Tensor:
+        sequence = [x]
+        for t in range(T):
+            sequence.append(self.transformer_forward(sequence[-1], t, use_kv_cache=True, update_kv_cache=True))
+        s = torch.cat(sequence, dim=1)
+        return x, s[:, 1:]
+
+    def acausal_forward_narrow(self, x: torch.Tensor, T: int) -> torch.Tensor:
+        y = broadcast_initial_conditions(x, T)
+        return x, self.transformer_forward(y)
+
+    def acausal_forward_wide(self, x: torch.Tensor, T: int) -> torch.Tensor:
+        y = broadcast_initial_conditions(x, T + 1)
+        z = self.transformer_forward(y)
+        return z[:, :1], z[:, 1:]
+
+    def one_step_forward(self, x: torch.Tensor) -> torch.Tensor:
+        T = x.shape[1]
+        sequence = []
+        for t in range(T):
+            sequence.append(self.transformer_forward(x[:, t], t, use_kv_cache=True, update_kv_cache=True))
+        s = torch.cat(sequence, dim=1)
+        return x, s
+
+    def double_forward(self, x: torch.Tensor, T: int) -> torch.Tensor:
+        _, y = self.generate_forward(x, T)
+        _, z = self.acausal_forward_narrow(y, T)
+        return x, z
+
+    def trajectory_to_trajectory(self, x: torch.Tensor, kind: str = "one_step") -> torch.Tensor:
+        if kind == "one_step":
+            return self.one_step_forward(x)
+        else:
+            raise ValueError(f"Invalid kind: {kind}")
+
+    def initial_conditions_to_trajectory(self, x: torch.Tensor, T: int, kind: str = "generate") -> torch.Tensor:
+        if kind == "generate":
+            return self.generate_forward(x, T)
+        elif kind == "acausal_narrow":
+            return self.acausal_forward_narrow(x, T)
+        elif kind == "acausal_wide":
+            return self.acausal_forward_wide(x, T)
+        elif kind == "double":
+            return self.double_forward(x, T)
+        else:
+            raise ValueError(f"Invalid kind: {kind}")
+
+    def clear_kv_cache(self):
+        for block in self.blocks:
+            block.clear_kv_cache()
