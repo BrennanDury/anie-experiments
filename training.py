@@ -72,7 +72,7 @@ def evaluation_epoch(loader, model, encoder, decoder, kind, loss_fn, device=None
         if device:
             initial_conditions = initial_conditions.to(device)
             trajectory = trajectory.to(device)
-        initial_conditions_pred, trajectory_preds = get_prediction_new(initial_conditions, trajectory, model, encoder, decoder, kind, decode_initial_conditions=compute_initial_conditions_loss)
+        initial_conditions_pred, trajectory_preds = get_prediction(initial_conditions, trajectory, model, encoder, decoder, kind, decode_initial_conditions=compute_initial_conditions_loss)
         if compute_initial_conditions_loss:
             preds = torch.cat(initial_conditions_pred, trajectory_preds, dim=1)
             targets = torch.cat(initial_conditions, trajectory, dim=1)
