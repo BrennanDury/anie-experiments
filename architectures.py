@@ -9,44 +9,6 @@ def galerkin_init(param, gain=0.01, diagonal_weight=0.01):
     nn.init.xavier_uniform_(param, gain=gain)
     param.data += diagonal_weight * torch.diag(torch.ones(param.size(-1), dtype=torch.float, device=param.device))
 
-class TrimTransformer(nn.Module):
-    def __init__(self, d_model: int, nhead: int, dim_feedforward: int, dropout: float, n_layers: int, scale: float | None = None, input_dim: int | None = None, activation=F.relu):
-        super().__init__()
-        norm_k = nn.LayerNorm(d_model//nhead)
-        norm_v = nn.LayerNorm(d_model//nhead)
-        encoder_layer = TrimTransformerEncoderLayer(
-            d_model=d_model,
-            nhead=nhead,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            batch_first=True,
-            norm_k=norm_k,
-            norm_v=norm_v,
-            q_weight_init=galerkin_init,
-            k_weight_init=galerkin_init,
-            v_weight_init=galerkin_init,
-            scale=scale,
-            activation=activation,
-        )
-        self.transformer_encoder = TrimTransformerEncoder(encoder_layer, num_layers=n_layers)
-        if input_dim is not None:
-            self.in_layer = nn.Linear(input_dim, d_model)
-            self.out_layer = nn.Linear(d_model, input_dim)
-        else:
-            self.in_layer = None
-            self.out_layer = None
-
-    def forward(self, x: torch.Tensor, mask=None, use_kv_cache: bool = False, update_kv_cache: bool = False) -> torch.Tensor:
-        if self.in_layer is not None:
-            x = self.in_layer(x)
-        x = self.transformer_encoder(x, mask=mask, use_kv_cache=use_kv_cache, update_kv_cache=update_kv_cache)
-        if self.out_layer is not None:
-            x = self.out_layer(x)
-        return x
-
-    def clear_kv_cache(self):
-        self.transformer_encoder.clear_kv_cache()
-
 class PatchwiseMLP(nn.Module):
     def __init__(self, input_dim, output_dim, hidden_dims=[32,32], K=[4,4], S=[4,4], activation=nn.ReLU):
         super().__init__()

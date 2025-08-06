@@ -11,85 +11,15 @@ encoder  # (B, T, H, W, Q) -> (B, T, Hp, Wp, C)
 decoder  # (B, T, Hp, Wp, C) -> (B, T, H, W, Q)
 positional_encoding  # (B, T, Hp, Wp, C) -> (B, T, Hp, Wp, C+P)
 positional_unencoding  # (B, T, Hp, Wp, C+P) -> (B, T, Hp, Wp, C)
-
-Masking must be handled by the model.
 """
 
-def broadcast_initial_conditions(x: Tensor, length: int) -> Tensor:
-    """
-    x : (B, 1, H, W, Q)
-    return : (B, length, H, W, Q)
-    """
-    return x.repeat(1, length, 1, 1, 1)
-
-def acausal_prediction_wide(x: Tensor, model: nn.Module, T: int) -> Tensor:
-    """
-    x : (B, 1, H, W, Q)
-    model : (B, T+1, H, W, Q) -> (B, T+1, H, W, Q)
-    return : (B, T, H, W, Q)
-    """
-    y = broadcast_initial_conditions(x, T + 1)
-    z = model(y)
-    return z[:, :1], z[:, 1:]
-
-def acausal_prediction_narrow(x: Tensor, model: nn.Module, T: int) -> Tensor:
-    """
-    x : (B, 1, H, W, Q)
-    model : (B, T, H, W, Q) -> (B, T, H, W, Q)
-    return : (B, T, H, W, Q)
-    """
-    y = broadcast_initial_conditions(x, T)
-    return x, model(y)
-
-def generate_prediction(x: Tensor, model: nn.Module, T: int) -> Tensor:
-    """
-    x : (B, 1, H, W, Q)
-    model : (B, 1, H, W, Q), t -> (B, 1, H, W, Q)
-    T : int
-    return : (B, T, H, W, Q)
-    """
-    sequence = [x]
-    for t in range(T):
-        sequence.append(model(sequence[-1], t))
-    s = torch.cat(sequence, dim=1)
-    return x, s[:, 1:]
-
-def one_step_prediction(x: Tensor, model: nn.Module) -> Tensor:
-    """
-    x : (B, T, H, W, Q)
-    model : (B, T, H, W, Q) -> (B, T, H, W, Q)
-    return : (B, T, H, W, Q)
-    """
-    y = model(x)
-    return x[:, :1], y
-
-def get_prediction(initial_conditions: Tensor, trajectory: Tensor, model: nn.Module, kind: str) -> Tensor:
-    """
-    initial_conditions : (B, 1, H, W, Q)
-    trajectory : (B, T, H, W, Q)
-    model : X -> Y
-    kind : str
-    return : (B, T, H, W, Q)
-    """
-    if kind == "acausal_wide":
-        return acausal_prediction_wide(initial_conditions, model, trajectory.shape[1])
-    elif kind == "acausal_narrow":
-        return acausal_prediction_narrow(initial_conditions, model, trajectory.shape[1])
-    elif kind == "generate":
-        return generate_prediction(initial_conditions, model, trajectory.shape[1])
-    elif kind == "one_step":
-        full_trajectory = torch.cat([initial_conditions, trajectory], dim=1)
-        return one_step_prediction(full_trajectory[:, :-1], model)
-    else:
-        raise ValueError(f"Invalid kind: {kind}")
-
-def get_prediction_new(initial_conditions: Tensor,
-                       trajectory: Tensor,
-                       model: nn.Module,
-                       encoder: nn.Module,
-                       decoder: nn.Module,
-                       kind: str,
-                       decode_initial_conditions: bool) -> Tensor:
+def get_prediction(initial_conditions: Tensor,
+                   trajectory: Tensor,
+                   model: nn.Module,
+                   encoder: nn.Module,
+                   decoder: nn.Module,
+                   kind: str,
+                   decode_initial_conditions: bool) -> Tensor:
     if kind == "one_step":
         input_trajectory = torch.cat([initial_conditions, trajectory], dim=1)
         y, z = model.trajectory_to_trajectory(encoder(input_trajectory), kind=kind)
