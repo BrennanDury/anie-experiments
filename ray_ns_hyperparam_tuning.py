@@ -1,5 +1,4 @@
 import os
-from tkinter.constants import TRUE
 import numpy as np
 import torch
 import torch.nn as nn
@@ -54,11 +53,8 @@ def derive_dependent_hparams(cfg: dict) -> dict:
     else:
         cfg["encoder_activation"] = nn.ReLU
 
-    if cfg["decoder_activation"] == "ELU":
-        cfg["decoder_activation"] = nn.ELU
-    else:
-        cfg["decoder_activation"] = nn.ReLU
-
+    cfg["decoder_activation"] = cfg["encoder_activation"]
+    cfg["outer_wrap"] = not cfg["inner_wrap"]
     return cfg
 
 
@@ -239,8 +235,6 @@ def main():
     parser = argparse.ArgumentParser(description="Navier–Stokes Ray Tune search")
     parser.add_argument("--results-dir", type=str, default="tune_results",
                         help="Directory where tuning result CSV files will be written.")
-    parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-    parser.add_argument("--train-kind", type=str, default="one_step", help="Train kind")
     args, _ = parser.parse_known_args()
 
     base_results_dir = Path(args.results_dir).resolve()
@@ -257,19 +251,23 @@ def main():
     datasets = {"train": train, "val": val}
 
     SEARCH_GRID = {
-
+        "train_kind": ["generate", "acausal", "one_step"],
+        "share":      [True, False],
+        "inner_wrap": [True, False],
     }
 
     TUNED_GRID = {
-        "train_kind":          ["generate"],
-        "share":               [True],
-        "encoder_activation":  ["ReLU", "ELU"],
-        "decoder_activation":  ["ReLU", "ELU"],
-        "mlp_kind":            ["norm", "act"],
+        "mlp_kind": ["norm", "act"],
+        "decoder_kind": ["patchwise", "timestepwise"],
+        "positional_encoding": ["rope", "coordinate"],
     }
 
     CONSTANT_PARAMS = {
         "data": "ns_data.mat",
+        "model_activation": "ReLU",
+        "encoder_activation": "ReLU",
+        "decoder_activation": "ReLU",
+        "n_timesteps": n_timesteps,
         "seed": 0,
         "d_model": 60,
         "batch_size": 32,
@@ -279,25 +277,19 @@ def main():
         "T_max": 101,
         "start_factor": 1e-9,
         "warmup_epochs": 10,
-        "n_timesteps": n_timesteps,
-        "project_input": False,
         "n_head": 4,
         "dropout": 0.1,
-        "patch_shape": [4, 4],
-        "compute_initial_conditions_train_loss": False,
-        "compute_initial_conditions_val_loss": False,
         "ff_factor": 4,
         "encoder_ff_factor": 4,
-        "narrow": True,
-        "model_activation": "ReLU",
-        "lr": args.lr,
-        "positional_encoding": "rope",
-        "decoder_kind": "patchwise",
-        "inner_wrap": False,
-        "model_activation": "ReLU",
+        "lr": 1e-3,
         "epochs": 313,
         "n_modules": 3,
-        "n_layers": 2,
+        "n_layers": 4,
+        "patch_shape": [4, 4],
+        "project_input": False,
+        "compute_initial_conditions_train_loss": False,
+        "compute_initial_conditions_val_loss": False,
+        "narrow": True,
     }
 
     outer_keys = list(SEARCH_GRID.keys())
@@ -313,7 +305,6 @@ def main():
                 **{k: tune.grid_search(v) for k, v in TUNED_GRID.items()},
                 **outer_cfg,
                 **CONSTANT_PARAMS,
-                "epochs": 313,
                 "name": "inner_tune",
         }
 
