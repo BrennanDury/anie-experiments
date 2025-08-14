@@ -279,7 +279,7 @@ def main():
         "ff_factor": 4,
         "encoder_ff_factor": 4,
         "lr": 1e-3,
-        "epochs": 1,
+        "epochs": 313,
         "n_modules": 3,
         "n_layers": 4,
         "patch_shape": [4, 4],
