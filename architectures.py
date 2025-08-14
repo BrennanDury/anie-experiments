@@ -286,6 +286,8 @@ class TransformerPipeline(nn.Module):
                       n_modules=1,
                       inner_wrap=False,
                       share=False,
+                      encoder=None,
+                      decoder=None,
                       ):
         super().__init__()
         norm_k = nn.LayerNorm(d_model//nhead)
@@ -324,7 +326,17 @@ class TransformerPipeline(nn.Module):
         self.pos_enc = pos_enc
         self.pos_unenc = pos_unenc
 
+        if encoder is not None:
+            self.encoder = encoder
+        else:
+            self.encoder = nn.Identity()
+        if decoder is not None:
+            self.decoder = decoder
+        else:
+            self.decoder = nn.Identity()
+
     def forward(self, x: torch.Tensor, t: int = 0, mask=None, use_kv_cache: bool = False, update_kv_cache: bool = False) -> torch.Tensor:
+        x = self.encoder(x)
         if not self.inner_wrap:
             y = self.pos_enc(x, t)
         else:
@@ -351,6 +363,7 @@ class TransformerPipeline(nn.Module):
             x = self.pos_unenc(y, t) + x
         else:
             x = y
+        x = self.decoder(x)
         return x
 
     def generate_forward(self, x: torch.Tensor, T: int) -> torch.Tensor:
@@ -373,9 +386,9 @@ class TransformerPipeline(nn.Module):
         T = x.shape[1]
         sequence = []
         for t in range(T):
-            sequence.append(self.forward(x[:, t], t, use_kv_cache=True, update_kv_cache=True))
+            sequence.append(self.forward(x[:, t, None, ...], t, use_kv_cache=True, update_kv_cache=True))
         s = torch.cat(sequence, dim=1)
-        return x, s
+        return x[:, 0, None, ...], s
 
     def trajectory_to_trajectory(self, x: torch.Tensor, kind: str = "one_step") -> torch.Tensor:
         if kind == "one_step":

@@ -144,17 +144,13 @@ def train_fn(config, ds):
                                 activation=cfg["model_activation"],
                                 n_modules=cfg["n_modules"],
                                 inner_wrap=cfg["inner_wrap"],
-                                share=cfg["share"]).to(device)
+                                share=cfg["share"],
+                                encoder=encoder,
+                                decoder=decoder)
 
-    pos_enc = pos_enc.to(device)
-    pos_unenc = pos_unenc.to(device)
     model = model.to(device)
-    encoder = encoder.to(device)
-    decoder = decoder.to(device)
 
-    l1 = list(pos_enc.parameters()) if cfg["positional_encoding"] == "learned" else []
-    l2 = list(model.parameters()) + list(encoder.parameters()) + list(decoder.parameters())
-    optim = torch.optim.Adam(l1 + l2, lr=cfg["lr"], weight_decay=cfg["weight_decay"])
+    optim = torch.optim.Adam(list(model.parameters()), lr=cfg["lr"], weight_decay=cfg["weight_decay"])
 
     if cfg["warmup_epochs"] > 0:
         batches_per_epoch = N // cfg["batch_size"]
@@ -174,10 +170,8 @@ def train_fn(config, ds):
     for epoch in range(1, cfg["epochs"] + 1):
         epoch_start_time = time.time()
         model.train()
-        encoder.train()
-        decoder.train()
         if epoch <= cfg["warmup_epochs"]:
-            train_loss = training_epoch(train_loader, model, encoder, decoder,
+            train_loss = training_epoch(train_loader, model,
                                         cfg["train_kind"],
                                         loss_fn,
                                         optim,
@@ -186,7 +180,7 @@ def train_fn(config, ds):
                                         device=device,
                                         compute_initial_conditions_loss=cfg["compute_initial_conditions_train_loss"])
         else:
-            train_loss = training_epoch(train_loader, model, encoder, decoder,
+            train_loss = training_epoch(train_loader, model,
                                         cfg["train_kind"],
                                         loss_fn,
                                         optim,
@@ -194,10 +188,13 @@ def train_fn(config, ds):
                                         device=device,
                                         compute_initial_conditions_loss=cfg["compute_initial_conditions_train_loss"])
         model.eval()
-        encoder.eval()
-        decoder.eval()
+
         with torch.no_grad():
-            val_loss = evaluation_epoch(val_loader, model, encoder, decoder, cfg["val_kind"], loss_fn, device=device, compute_initial_conditions_loss=cfg["compute_initial_conditions_val_loss"])
+            val_loss = evaluation_epoch(val_loader, model,
+                                        cfg["val_kind"],
+                                        loss_fn,
+                                        device=device,
+                                        compute_initial_conditions_loss=cfg["compute_initial_conditions_val_loss"])
         if epoch > cfg["warmup_epochs"]:
             scheduler.step()
 
@@ -282,7 +279,7 @@ def main():
         "ff_factor": 4,
         "encoder_ff_factor": 4,
         "lr": 1e-3,
-        "epochs": 313,
+        "epochs": 1,
         "n_modules": 3,
         "n_layers": 4,
         "patch_shape": [4, 4],
