@@ -290,7 +290,7 @@ class TransformerPipeline(nn.Module):
         super().__init__()
         norm_k = nn.LayerNorm(d_model//nhead)
         norm_v = nn.LayerNorm(d_model//nhead)
-        encoder_layer = TrimTransformerEncoderLayer(
+        transformer_layer = TrimTransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
             dim_feedforward=dim_feedforward,
@@ -305,14 +305,14 @@ class TransformerPipeline(nn.Module):
             activation=activation,
         )
         if share:
-            master = TrimTransformerEncoder(encoder_layer, num_layers=n_layers)
+            master = TrimTransformerEncoder(transformer_layer, num_layers=n_layers)
             self.blocks = nn.ModuleList([master])
             for _ in range(n_modules - 1):
                 clone = copy.deepcopy(master)
                 _tie_parameters(master, clone)
                 self.blocks.append(clone)
         else:
-            self.blocks = nn.ModuleList([TrimTransformerEncoder(encoder_layer, num_layers=n_layers) for _ in range(n_modules)])
+            self.blocks = nn.ModuleList([TrimTransformerEncoder(transformer_layer, num_layers=n_layers) for _ in range(n_modules)])
 
         if input_dim is not None:
             self.in_layer = nn.Linear(input_dim, d_model)
@@ -324,7 +324,7 @@ class TransformerPipeline(nn.Module):
         self.pos_enc = pos_enc
         self.pos_unenc = pos_unenc
 
-    def transformer_forward(self, x: torch.Tensor, t: int = 0, mask=None, use_kv_cache: bool = False, update_kv_cache: bool = False) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, t: int = 0, mask=None, use_kv_cache: bool = False, update_kv_cache: bool = False) -> torch.Tensor:
         if not self.inner_wrap:
             y = self.pos_enc(x, t)
         else:
@@ -356,31 +356,26 @@ class TransformerPipeline(nn.Module):
     def generate_forward(self, x: torch.Tensor, T: int) -> torch.Tensor:
         sequence = [x]
         for t in range(T):
-            sequence.append(self.transformer_forward(sequence[-1], t, use_kv_cache=True, update_kv_cache=True))
+            sequence.append(self.forward(sequence[-1], t, use_kv_cache=True, update_kv_cache=True))
         s = torch.cat(sequence, dim=1)
         return x, s[:, 1:]
 
     def acausal_forward_narrow(self, x: torch.Tensor, T: int) -> torch.Tensor:
         y = broadcast_initial_conditions(x, T)
-        return x, self.transformer_forward(y)
+        return x, self.forward(y)
 
     def acausal_forward_wide(self, x: torch.Tensor, T: int) -> torch.Tensor:
         y = broadcast_initial_conditions(x, T + 1)
-        z = self.transformer_forward(y)
+        z = self.forward(y)
         return z[:, :1], z[:, 1:]
 
     def one_step_forward(self, x: torch.Tensor) -> torch.Tensor:
         T = x.shape[1]
         sequence = []
         for t in range(T):
-            sequence.append(self.transformer_forward(x[:, t], t, use_kv_cache=True, update_kv_cache=True))
+            sequence.append(self.forward(x[:, t], t, use_kv_cache=True, update_kv_cache=True))
         s = torch.cat(sequence, dim=1)
         return x, s
-
-    def double_forward(self, x: torch.Tensor, T: int) -> torch.Tensor:
-        _, y = self.generate_forward(x, T)
-        _, z = self.acausal_forward_narrow(y, T)
-        return x, z
 
     def trajectory_to_trajectory(self, x: torch.Tensor, kind: str = "one_step") -> torch.Tensor:
         if kind == "one_step":
@@ -395,8 +390,6 @@ class TransformerPipeline(nn.Module):
             return self.acausal_forward_narrow(x, T)
         elif kind == "acausal_wide":
             return self.acausal_forward_wide(x, T)
-        elif kind == "double":
-            return self.double_forward(x, T)
         else:
             raise ValueError(f"Invalid kind: {kind}")
 
