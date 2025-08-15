@@ -26,8 +26,8 @@ def training_epoch(loader, model, kind, loss_fn, optim, scheduler=None, grad_cli
 
         initial_conditions_pred, trajectory_preds = get_prediction(initial_conditions, trajectory, model, kind)
         if compute_initial_conditions_loss:
-            preds = torch.cat(initial_conditions_pred, trajectory_preds, dim=1)
-            targets = torch.cat(initial_conditions, trajectory, dim=1)
+            preds = torch.cat([initial_conditions_pred, trajectory_preds], dim=1)
+            targets = torch.cat([initial_conditions, trajectory], dim=1)
         else:
             preds = trajectory_preds
             targets = trajectory

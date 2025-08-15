@@ -53,8 +53,10 @@ def derive_dependent_hparams(cfg: dict) -> dict:
     else:
         cfg["encoder_activation"] = nn.ReLU
 
-    cfg["decoder_activation"] = cfg["encoder_activation"]
-    cfg["outer_wrap"] = not cfg["inner_wrap"]
+    if cfg["decoder_activation"] == "ELU":
+        cfg["decoder_activation"] = nn.ELU
+    else:
+        cfg["decoder_activation"] = nn.ReLU
     return cfg
 
 
@@ -76,7 +78,7 @@ def train_fn(config, ds):
     train_loader = train_shard.iter_torch_batches(batch_size=cfg["batch_size"], drop_last=True)
     val_loader = val_shard.iter_torch_batches(batch_size=cfg["batch_size"], drop_last=True)
 
-    N, H, W, Q = 128, 64, 64, 1
+    N, H, W, Q = cfg["N"], 64, 64, 1
 
     if cfg["mlp_kind"] == "norm":
         MLPClass = PatchwiseMLP_norm
@@ -144,6 +146,7 @@ def train_fn(config, ds):
                                 activation=cfg["model_activation"],
                                 n_modules=cfg["n_modules"],
                                 inner_wrap=cfg["inner_wrap"],
+                                outer_wrap=cfg["outer_wrap"],
                                 share=cfg["share"],
                                 encoder=encoder,
                                 decoder=decoder)
@@ -248,15 +251,17 @@ def main():
     datasets = {"train": train, "val": val}
 
     SEARCH_GRID = {
-        "train_kind": ["generate", "acausal", "one_step"],
-        "share":      [True, False],
-        "inner_wrap": [True, False],
+        "train_kind": ["generate"],
+        "share":      [True],
+        "inner_wrap": [False],
     }
 
     TUNED_GRID = {
-        "mlp_kind": ["norm", "act"],
-        "decoder_kind": ["patchwise", "timestepwise"],
-        "positional_encoding": ["rope", "coordinate"],
+        "mlp_kind": ["norm"],
+        "outer_wrap": [True, False],
+        "positional_encoding": ["rope"],
+        "decoder_kind": ["patchwise"],
+        "N": [4000, 128],
     }
 
     CONSTANT_PARAMS = {

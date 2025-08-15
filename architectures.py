@@ -285,6 +285,7 @@ class TransformerPipeline(nn.Module):
                       activation=F.relu,
                       n_modules=1,
                       inner_wrap=False,
+                      outer_wrap=False,
                       share=False,
                       encoder=None,
                       decoder=None,
@@ -323,6 +324,7 @@ class TransformerPipeline(nn.Module):
             self.in_layer = nn.Identity()
             self.out_layer = nn.Identity()
         self.inner_wrap = inner_wrap
+        self.outer_wrap = outer_wrap
         self.pos_enc = pos_enc
         self.pos_unenc = pos_unenc
 
@@ -336,11 +338,9 @@ class TransformerPipeline(nn.Module):
             self.decoder = nn.Identity()
 
     def forward(self, x: torch.Tensor, t: int = 0, mask=None, use_kv_cache: bool = False, update_kv_cache: bool = False) -> torch.Tensor:
-        x = self.encoder(x)
+        y = self.encoder(x)
         if not self.inner_wrap:
-            y = self.pos_enc(x, t)
-        else:
-            y = x
+            y = self.pos_enc(y, t)
 
         space_time_shape = y.shape[1:4]
 
@@ -360,11 +360,11 @@ class TransformerPipeline(nn.Module):
                 y = z
 
         if not self.inner_wrap:
-            x = self.pos_unenc(y, t) + x
-        else:
-            x = y
-        x = self.decoder(x)
-        return x
+            y = self.pos_unenc(y, t)
+        y = self.decoder(y)
+        if self.outer_wrap:
+            y = y + x
+        return y
 
     def generate_forward(self, x: torch.Tensor, T: int) -> torch.Tensor:
         sequence = [x]
