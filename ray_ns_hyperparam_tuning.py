@@ -78,7 +78,7 @@ def train_fn(config, ds):
     train_loader = train_shard.iter_torch_batches(batch_size=cfg["batch_size"], drop_last=True)
     val_loader = val_shard.iter_torch_batches(batch_size=cfg["batch_size"], drop_last=True)
 
-    N, H, W, Q = cfg["N"], 64, 64, 1
+    N, H, W, Q = 4000, 64, 64, 1
 
     if cfg["mlp_kind"] == "norm":
         MLPClass = PatchwiseMLP_norm
@@ -251,17 +251,15 @@ def main():
     datasets = {"train": train, "val": val}
 
     SEARCH_GRID = {
-        "train_kind": ["generate"],
-        "share":      [True],
-        "inner_wrap": [False],
+        "train_kind": ["generate", "acausal", "one_step"],
+        "share":      [True, False],
+        "inner_wrap": [True, False],
     }
 
     TUNED_GRID = {
-        "mlp_kind": ["norm"],
-        "outer_wrap": [True, False],
-        "positional_encoding": ["rope"],
-        "decoder_kind": ["patchwise"],
-        "N": [4000, 128],
+        "mlp_kind": ["norm", "act"],
+        "positional_encoding": ["rope", "coordinate"],
+        "decoder_kind": ["patchwise", "timestepwise"],
     }
 
     CONSTANT_PARAMS = {
@@ -292,6 +290,7 @@ def main():
         "compute_initial_conditions_train_loss": False,
         "compute_initial_conditions_val_loss": False,
         "narrow": True,
+        "outer_wrap": False,
     }
 
     outer_keys = list(SEARCH_GRID.keys())
