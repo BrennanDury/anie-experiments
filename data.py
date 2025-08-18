@@ -24,16 +24,13 @@ def load_navier_stokes_tensor(
     u_np = data["u"]  # (N, H, W, T'-1)
     a_np = data["a"]  # (N, H, W)
 
-    u = torch.from_numpy(u_np)[..., None].permute(0, 3, 1, 2, 4)  # (N, T'-1, H, W, Q))  Q = 1
-    a = torch.from_numpy(a_np)[..., None, None].permute(0, 3, 1, 2, 4)  # (N, 1, H, W, Q))
+    u = torch.from_numpy(u_np)[..., None].permute(0, 3, 1, 2, 4)
+    a = torch.from_numpy(a_np)[..., None, None].permute(0, 3, 1, 2, 4)
 
-    # ``a`` becomes the first time step
-
-    # Optionally subsample the temporal dimension to `n_timesteps` frames
     if n_timesteps is not None and n_timesteps < u.shape[1]:
         idx = np.linspace(0, u.shape[1] - 1, num=n_timesteps, dtype=int)
         u = u[:, idx]
-    return a, u  # (N, T, H, W, Q), (N, 1, H, W, Q)
+    return a, u
 
 class NavierStokesDataset(Dataset):
     """Dataset yielding (initial_condition, trajectory) pairs.

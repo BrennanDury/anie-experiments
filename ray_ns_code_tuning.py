@@ -16,8 +16,19 @@ import time
 import tempfile, os
 from itertools import product
 import argparse
+import json
 
-def derive_dependent_hparams(cfg: dict) -> dict:    
+file_path = Path('optimal_configs.json')
+with open(file_path, 'r') as f:
+    loaded_string_key_dict = json.load(f)
+loaded_optimal_configs = {eval(key): value for key, value in loaded_string_key_dict.items()}
+
+def derive_dependent_hparams(cfg: dict) -> dict:  
+    code = (cfg["share"], cfg["train_kind"], cfg["inner_wrap"])
+    cfg["positional_encoding"] = loaded_optimal_configs[code]["positional_encoding"]
+    cfg["mlp_kind"] = loaded_optimal_configs[code]["mlp_kind"]
+    cfg["decoder_kind"] = loaded_optimal_configs[code]["decoder_kind"]
+
     if cfg["positional_encoding"] == "coordinate":
         s = cfg["d_model"] - 3
     else:
@@ -252,15 +263,12 @@ def main():
     datasets = {"train": train, "val": val}
 
     SEARCH_GRID = {
-        "train_kind": ["generate", "acausal", "one_step"],
-        "share":      [True, False],
-        "inner_wrap": [True, False],
     }
 
     TUNED_GRID = {
-        "mlp_kind": ["norm", "act"],
-        "positional_encoding": ["rope", "coordinate"],
-        "decoder_kind": ["patchwise", "timestepwise"],
+        "train_kind": ["acausal", "generate","one_step"],
+        "share":      [True, False],
+        "inner_wrap": [True, False],
     }
 
     CONSTANT_PARAMS = {
@@ -283,7 +291,7 @@ def main():
         "ff_factor": 4,
         "encoder_ff_factor": 4,
         "lr": 1e-3,
-        "epochs": 313,
+        "epochs": 4959,
         "n_modules": 3,
         "n_layers": 4,
         "patch_shape": [4, 4],
