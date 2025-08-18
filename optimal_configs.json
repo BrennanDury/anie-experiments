@@ -1,0 +1,62 @@
+{
+    "(False, 'acausal', False)": {
+        "positional_encoding": "rope",
+        "mlp_kind": "act",
+        "decoder_kind": "patchwise"
+    },
+    "(False, 'acausal', True)": {
+        "positional_encoding": "rope",
+        "mlp_kind": "norm",
+        "decoder_kind": "patchwise"
+    },
+    "(False, 'generate', False)": {
+        "positional_encoding": "rope",
+        "mlp_kind": "norm",
+        "decoder_kind": "patchwise"
+    },
+    "(False, 'generate', True)": {
+        "positional_encoding": "rope",
+        "mlp_kind": "act",
+        "decoder_kind": "patchwise"
+    },
+    "(False, 'one_step', False)": {
+        "positional_encoding": "coordinate",
+        "mlp_kind": "norm",
+        "decoder_kind": "timestepwise"
+    },
+    "(False, 'one_step', True)": {
+        "positional_encoding": "rope",
+        "mlp_kind": "norm",
+        "decoder_kind": "timestepwise"
+    },
+    "(True, 'acausal', False)": {
+        "positional_encoding": "rope",
+        "mlp_kind": "norm",
+        "decoder_kind": "patchwise"
+    },
+    "(True, 'acausal', True)": {
+        "positional_encoding": "rope",
+        "mlp_kind": "norm",
+        "decoder_kind": "patchwise"
+    },
+    "(True, 'generate', False)": {
+        "positional_encoding": "rope",
+        "mlp_kind": "norm",
+        "decoder_kind": "patchwise"
+    },
+    "(True, 'generate', True)": {
+        "positional_encoding": "rope",
+        "mlp_kind": "act",
+        "decoder_kind": "patchwise"
+    },
+    "(True, 'one_step', False)": {
+        "positional_encoding": "coordinate",
+        "mlp_kind": "act",
+        "decoder_kind": "timestepwise"
+    },
+    "(True, 'one_step', True)": {
+        "positional_encoding": "coordinate",
+        "mlp_kind": "act",
+        "decoder_kind": "timestepwise"
+    }
+}
