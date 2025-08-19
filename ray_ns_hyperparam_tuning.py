@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import ray
 from ray import tune
 from ray.tune import Checkpoint
-from data import load_navier_stokes_tensor
+from data import load_navier_stokes_data
 from architectures import PatchwiseMLP, PatchwiseMLP_norm, PatchwiseMLP_act, PatchwiseMLP_remove, TimestepwiseMLP, \
     PositionalEncoding, PositionalUnencoding, RoPENd, RoPENdUnencoding, \
     LearnedPositionalEncoding, LearnedPositionalUnencoding, DecoderWrapper, TransformerPipeline
@@ -244,7 +244,7 @@ def main():
     ray.init(object_store_memory=200_000_000_000)
 
     n_timesteps = 9
-    init_conds, trajs = load_navier_stokes_tensor(Path(args.data), n_timesteps=n_timesteps)
+    init_conds, trajs = load_navier_stokes_data(args.data, n_timesteps=n_timesteps)
 
     items = [{"a": init_conds.numpy()[i], "u": trajs.numpy()[i]} for i in range(init_conds.shape[0])]
     ray_ds = ray.data.from_items(items)

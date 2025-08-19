@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import ray
 from ray import tune
 from ray.tune import Checkpoint
-from data import load_navier_stokes_tensor
+from data import load_navier_stokes_data, load_burgers_data
 from architectures import PatchwiseMLP, PatchwiseMLP_norm, PatchwiseMLP_act, PatchwiseMLP_remove, TimestepwiseMLP, \
     PositionalEncoding, PositionalUnencoding, RoPENd, RoPENdUnencoding, \
     LearnedPositionalEncoding, LearnedPositionalUnencoding, DecoderWrapper, TransformerPipeline
@@ -68,6 +68,22 @@ def derive_dependent_hparams(cfg: dict) -> dict:
         cfg["decoder_activation"] = nn.ELU
     else:
         cfg["decoder_activation"] = nn.ReLU
+
+    if cfg["equation"] == "ns":
+        cfg["patch_shape"] = [4, 4]
+        cfg["N"] = 4000
+        cfg["H"] = 64
+        cfg["W"] = 64
+        cfg["Q"] = 1
+    elif cfg["equation"] == "burgers":
+        cfg["patch_shape"] = [16, 1]
+        cfg["N"] = 1000
+        cfg["H"] = 1024
+        cfg["W"] = 1
+        cfg["Q"] = 1
+    else:
+        raise ValueError(f"Invalid equation: {cfg['equation']}")
+
     return cfg
 
 
@@ -247,6 +263,9 @@ def main():
     parser.add_argument("--results-dir", type=str, default="tune_results",
                         help="Directory where tuning result CSV files will be written.")
     parser.add_argument("--data", type=str, default="ns_data.mat")
+    parser.add_argument("--equation", type=str, default="ns", choices=["ns", "burgers"])
+    parser.add_argument("--n-timesteps", type=int, default=9)
+    parser.add_argument("--spatial-resolution", type=int, default=256)
     args, _ = parser.parse_known_args()
 
     base_results_dir = Path(args.results_dir).resolve()
@@ -254,19 +273,26 @@ def main():
 
     ray.init(object_store_memory=200_000_000_000)
 
-    n_timesteps = 9
-    init_conds, trajs = load_navier_stokes_tensor(Path(args.data), n_timesteps=n_timesteps)
+    if args.equation == "ns":
+        init_conds, trajs = load_navier_stokes_data(args.data,
+                                                    n_timesteps=args.n_timesteps)
+    elif args.equation == "burgers":
+        init_conds, trajs = load_burgers_data(args.data,
+                                              n_timesteps=args.n_timesteps)
+    else:
+        raise ValueError(f"Invalid equation: {args.equation}")
 
     items = [{"a": init_conds.numpy()[i], "u": trajs.numpy()[i]} for i in range(init_conds.shape[0])]
     ray_ds = ray.data.from_items(items)
     train, val = ray_ds.train_test_split(test_size=0.2)
     datasets = {"train": train, "val": val}
 
+
     SEARCH_GRID = {
     }
 
     TUNED_GRID = {
-        "train_kind": ["acausal", "generate","one_step"],
+        "train_kind": ["generate", "acausal", "one_step"],
         "share":      [True, False],
         "inner_wrap": [True, False],
     }
@@ -276,7 +302,7 @@ def main():
         "model_activation": "ReLU",
         "encoder_activation": "ReLU",
         "decoder_activation": "ReLU",
-        "n_timesteps": n_timesteps,
+        "n_timesteps": args.n_timesteps,
         "seed": 0,
         "d_model": 60,
         "batch_size": 32,
@@ -290,16 +316,16 @@ def main():
         "dropout": 0.1,
         "ff_factor": 4,
         "encoder_ff_factor": 4,
-        "lr": 1e-3,
+        "lr": 1e-4,
         "epochs": 4959,
         "n_modules": 3,
         "n_layers": 4,
-        "patch_shape": [4, 4],
         "project_input": False,
         "compute_initial_conditions_train_loss": False,
         "compute_initial_conditions_val_loss": False,
         "narrow": True,
         "outer_wrap": False,
+        "equation": args.equation,
     }
 
     outer_keys = list(SEARCH_GRID.keys())
