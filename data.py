@@ -32,7 +32,7 @@ def load_burgers_data(
     mat_path: str,
     n_timesteps: Optional[int] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    data = torch.load(mat_path)
+    data = torch.load(mat_path).to(torch.float32)
     data = data.permute(0, 2, 1)[:, 1:, :, None, None]
     a = data[:, :1]
     u = data[:, 1:]

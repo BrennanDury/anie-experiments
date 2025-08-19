@@ -155,21 +155,17 @@ class DecoderWrapper(nn.Module):
         x = x.contiguous().view(B, T, Hp * self.ph, Wp * self.pw, self.Q)        
         return x
 
-def make_positional_encoding(T, H, W) -> torch.Tensor:
-    t_coord = torch.linspace(0, 1, T)  # (T,)
-    row_coord = torch.linspace(0, 1, H)  # (H,)
-    col_coord = torch.linspace(0, 1, W)  # (W,)
 
-    time_enc = t_coord.view(T, 1, 1).expand(T, H, W)  # (T, H, W)
-    row_enc  = row_coord.view(1, H, 1).expand(T, H, W)  # (T, H, W)
-    col_enc  = col_coord.view(1, 1, W).expand(T, H, W)  # (T, H, W)
+def make_positional_encoding(axes: torch.Size) -> torch.Tensor:
+    coords = [
+        torch.linspace(0, 1, n) for n in axes if n > 1
+    ]
+    grids = torch.meshgrid(coords, indexing='ij')
+    return torch.stack(grids, dim=-1).reshape(axes + (len(coords),))
 
-    out = torch.stack([time_enc, row_enc, col_enc], dim=-1)  # (T, H, W, P)
-    return out
-
-class PositionalEncoding(nn.Module):
+class CoordinateEncoding(nn.Module):
     encoding: torch.Tensor
-    def __init__(self, Tp, Hp, Wp):
+    def __init__(self, axes):
         super().__init__()
         self.register_buffer('encoding', make_positional_encoding(Tp, Hp, Wp))
 
@@ -182,10 +178,10 @@ class PositionalEncoding(nn.Module):
         B, Tp = x.shape[0], x.shape[1]
         return torch.cat([self.encoding[t:t+Tp].unsqueeze(0).expand(B, -1, -1, -1, -1), x], dim=-1)
 
-class PositionalUnencoding(nn.Module):
-    def __init__(self, T, H, W):
+class CoordinateUnencoding(nn.Module):
+    def __init__(self, axes):
         super().__init__()
-        self.encoding = make_positional_encoding(T, H, W)
+        self.encoding = make_positional_encoding(axes)
 
     def forward(self, x: torch.Tensor, t: int) -> torch.Tensor:
         """
@@ -196,17 +192,18 @@ class PositionalUnencoding(nn.Module):
 
 
 def make_rotations(shape, base=10000):
-    channel_dims, feature_dim = shape[:-1], shape[-1]
-    k_max = feature_dim // (2 * len(channel_dims))
+    squeezed_shape = tuple(d for d in shape if d > 1)
 
-    assert feature_dim % k_max == 0, f'shape[-1] ({feature_dim}) is not divisible by 2 * len(shape[:-1]) ({2 * len(channel_dims)})'
+    channel_dims, feature_dim = squeezed_shape[:-1], squeezed_shape[-1]
+    assert feature_dim % (2 * len(channel_dims)) == 0, f'shape[-1] ({feature_dim}) is not divisible by 2 * len(shape[:-1]) ({2 * len(channel_dims)})'
+    k_max = feature_dim // (2 * len(channel_dims))
 
     theta_ks = 1 / (base ** (torch.arange(k_max) / k_max))
 
     angles = torch.cat([t.unsqueeze(-1) * theta_ks for t in
                         torch.meshgrid([torch.arange(d) for d in channel_dims], indexing='ij')], dim=-1)
 
-    rotations = torch.polar(torch.ones_like(angles), angles)
+    rotations = torch.polar(torch.ones_like(angles), angles).reshape(shape[:-1] + (shape[-1] // 2,))
     return rotations
 
 class RoPENd(nn.Module):
@@ -235,11 +232,11 @@ class RoPENdUnencoding(nn.Module):
         return torch.view_as_real(pe_x).flatten(-2)
 
 
-class LearnedPositionalEncoding(nn.Module):
+class LearnedEncoding(nn.Module):
     encoding: torch.nn.Parameter
 
     def __init__(self, shape):
-        super(LearnedPositionalEncoding, self).__init__()
+        super(LearnedEncoding, self).__init__()
         self.encoding = nn.Parameter(torch.empty(*shape))
         nn.init.zeros_(self.encoding)
 
@@ -247,9 +244,9 @@ class LearnedPositionalEncoding(nn.Module):
         _B, Tp = x.shape[0], x.shape[1]
         return x + self.encoding[None, t : t + Tp]
 
-class LearnedPositionalUnencoding(nn.Module):
-    def __init__(self, learned_encoding_module: LearnedPositionalEncoding):
-        super(LearnedPositionalUnencoding, self).__init__()
+class LearnedUnencoding(nn.Module):
+    def __init__(self, learned_encoding_module: LearnedEncoding):
+        super(LearnedUnencoding, self).__init__()
         self.learned_encoding_module = learned_encoding_module
 
     def forward(self, x, t: int):
