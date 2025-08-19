@@ -265,7 +265,6 @@ def main():
     parser.add_argument("--data", type=str, default="ns_data.mat")
     parser.add_argument("--equation", type=str, default="ns", choices=["ns", "burgers"])
     parser.add_argument("--n-timesteps", type=int, default=9)
-    parser.add_argument("--spatial-resolution", type=int, default=256)
     args, _ = parser.parse_known_args()
 
     base_results_dir = Path(args.results_dir).resolve()
@@ -292,7 +291,7 @@ def main():
     }
 
     TUNED_GRID = {
-        "train_kind": ["generate", "acausal", "one_step"],
+        "train_kind": ["generate", "acausal"],
         "share":      [True, False],
         "inner_wrap": [True, False],
     }
