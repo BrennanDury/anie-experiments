@@ -167,7 +167,7 @@ class CoordinateEncoding(nn.Module):
     encoding: torch.Tensor
     def __init__(self, axes):
         super().__init__()
-        self.register_buffer('encoding', make_positional_encoding(Tp, Hp, Wp))
+        self.register_buffer('encoding', make_positional_encoding(axes))
 
     def forward(self, x: torch.Tensor, t: int) -> torch.Tensor:
         """ 

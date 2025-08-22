@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import ray
 from ray import tune
 from ray.tune import Checkpoint
-from data import load_navier_stokes_data, load_burgers_data
+from data import load_navier_stokes_data, load_burgers_data, load_swe_data
 from architectures import PatchwiseMLP, PatchwiseMLP_norm, PatchwiseMLP_act, PatchwiseMLP_remove, TimestepwiseMLP, \
     CoordinateEncoding, CoordinateUnencoding, RoPENd, RoPENdUnencoding, \
     LearnedEncoding, LearnedUnencoding, DecoderWrapper, TransformerPipeline
@@ -41,11 +41,17 @@ def derive_dependent_hparams(cfg: dict) -> dict:
         cfg["H"] = 1024
         cfg["W"] = 1
         cfg["Q"] = 1
+    elif cfg["equation"] == "swe":
+        cfg["patch_shape"] = [8, 8]
+        cfg["N"] = 800
+        cfg["H"] = 128
+        cfg["W"] = 128
+        cfg["Q"] = 1
     else:
         raise ValueError(f"Invalid equation: {cfg['equation']}")
 
     if cfg["positional_encoding"] == "coordinate":
-        p = 3 if cfg["equation"] == "ns" else 2
+        p = 2 if cfg["equation"] == "burgers" else 3
         s = cfg["d_model"] - p
     else:
         s = cfg["d_model"]
@@ -154,10 +160,12 @@ def train_fn(config, ds):
         pos_unenc = LearnedUnencoding(pos_enc)
 
     if cfg["project_input"]:
-        transformer_input_dim = cfg["encoder_output_dim"] + (3 if cfg["positional_encoding"] == "coordinate" else 0)
+        p = 2 if cfg["equation"] == "burgers" else 3
+        transformer_input_dim = cfg["encoder_output_dim"] + (p if cfg["positional_encoding"] == "coordinate" else 0)
     else:
         transformer_input_dim = None
-        assert cfg["d_model"] == cfg["encoder_output_dim"] + (3 if cfg["positional_encoding"] == "coordinate" else 0)
+        p = 2 if cfg["equation"] == "burgers" else 3
+        assert cfg["d_model"] == cfg["encoder_output_dim"] + (p if cfg["positional_encoding"] == "coordinate" else 0)
 
     n_tokens = time_width * Hp * Wp
     scale = 1.0 / n_tokens
@@ -264,7 +272,7 @@ def main():
     parser.add_argument("--results-dir", type=str, default="tune_results",
                         help="Directory where tuning result CSV files will be written.")
     parser.add_argument("--data", type=str, default="ns_data.mat")
-    parser.add_argument("--equation", type=str, default="ns", choices=["ns", "burgers"])
+    parser.add_argument("--equation", type=str, default="ns", choices=["ns", "burgers", "swe"])
     parser.add_argument("--n-timesteps", type=int, default=9)
     args, _ = parser.parse_known_args()
 
@@ -279,6 +287,9 @@ def main():
     elif args.equation == "burgers":
         init_conds, trajs = load_burgers_data(args.data,
                                               n_timesteps=args.n_timesteps)
+    elif args.equation == "swe":
+        init_conds, trajs = load_swe_data(args.data,
+                                          n_timesteps=args.n_timesteps)
     else:
         raise ValueError(f"Invalid equation: {args.equation}")
 
@@ -292,13 +303,13 @@ def main():
     }
 
     TUNED_GRID = {
-        "train_kind": ["generate", "acausal"],
+        "train_kind": ["acausal", "generate", "one_step"],
         "share":      [True, False],
         "inner_wrap": [True, False],
     }
 
     CONSTANT_PARAMS = {
-        "data": "ns_data.mat",
+        "data": args.data
         "model_activation": "ReLU",
         "encoder_activation": "ReLU",
         "decoder_activation": "ReLU",
@@ -316,7 +327,7 @@ def main():
         "dropout": 0.1,
         "ff_factor": 4,
         "encoder_ff_factor": 4,
-        "lr": 1e-4,
+        "lr": 1e-3,
         "epochs": 4959,
         "n_modules": 3,
         "n_layers": 4,
