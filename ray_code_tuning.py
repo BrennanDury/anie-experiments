@@ -309,7 +309,7 @@ def main():
     }
 
     CONSTANT_PARAMS = {
-        "data": args.data
+        "data": args.data,
         "model_activation": "ReLU",
         "encoder_activation": "ReLU",
         "decoder_activation": "ReLU",
